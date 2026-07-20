@@ -762,31 +762,32 @@ function NudgeCard({ nudge, from, onDismiss, onOpen }) {
   const moved = useRef(false);
   return (
     <div
-      onTouchStart={(e) => { e.stopPropagation(); start.current = e.touches[0].clientX; moved.current = false; }}
-      onTouchMove={(e) => { if (start.current != null) { const d = e.touches[0].clientX - start.current; if (Math.abs(d) > 8) moved.current = true; setDx(d); } }}
-      onTouchEnd={(e) => { e.stopPropagation(); const d = dx; start.current = null; if (Math.abs(d) > 80) { setDx(d > 0 ? 420 : -420); setTimeout(onDismiss, 160); } else setDx(0); }}
+      onTouchStart={(e) => { start.current = e.touches[0].clientX; moved.current = false; }}
+      onTouchMove={(e) => { if (start.current != null) { const d = e.touches[0].clientX - start.current; if (Math.abs(d) > 8) moved.current = true; setDx(Math.max(0, d)); } }}
+      onTouchEnd={(e) => { const d = dx; start.current = null; if (d > 80) { e.stopPropagation(); setDx(420); setTimeout(onDismiss, 160); } else setDx(0); }}
       onClick={() => { if (!moved.current) onOpen(); }}
-      style={{ display: "flex", gap: 11, alignItems: "center", background: C.terraSoft, borderRadius: 20, padding: "14px 16px", marginTop: 12, cursor: "pointer", transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - Math.abs(dx) / 320), transition: start.current == null ? "transform .18s, opacity .18s" : "none" }}>
+      style={{ display: "flex", gap: 11, alignItems: "center", background: C.terraSoft, borderRadius: 20, padding: "14px 16px", marginTop: 12, cursor: "pointer", transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - dx / 320), transition: start.current == null ? "transform .18s, opacity .18s" : "none" }}>
       <Avatar m={from} size={34} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>A little reminder from {from.name}</div>
         <div style={{ fontSize: 12.5, color: C.terraDark, marginTop: 2, lineHeight: 1.4 }}>"{nudge.text}"</div>
-        <div style={{ fontSize: 10.5, color: C.mut, marginTop: 3, fontWeight: 600 }}>swipe to mark as read</div>
+        <div style={{ fontSize: 10.5, color: C.mut, marginTop: 3, fontWeight: 600 }}>swipe right to mark as read</div>
       </div>
       <span style={{ color: C.terra, fontSize: 16, fontWeight: 700 }}>›</span>
     </div>
   );
 }
 function SwipeableRow({ onSwipe, onTap, children, style }) {
+  /* right-swipe only: completes. Leftward drags do nothing here and fall through to the tab switcher. */
   const [dx, setDx] = useState(0);
-  const start = useRef(null); const moved = useRef(false);
+  const start = useRef(null); const moved = useRef(false); const raw = useRef(0);
   return (
     <div
-      onTouchStart={(e) => { e.stopPropagation(); start.current = e.touches[0].clientX; moved.current = false; }}
-      onTouchMove={(e) => { if (start.current != null) { const d = e.touches[0].clientX - start.current; if (Math.abs(d) > 8) moved.current = true; setDx(d); } }}
-      onTouchEnd={(e) => { e.stopPropagation(); const d = dx; start.current = null; if (Math.abs(d) > 80) { setDx(d > 0 ? 460 : -460); setTimeout(onSwipe, 190); } else setDx(0); }}
+      onTouchStart={(e) => { start.current = e.touches[0].clientX; moved.current = false; raw.current = 0; }}
+      onTouchMove={(e) => { if (start.current != null) { const d = e.touches[0].clientX - start.current; raw.current = d; if (Math.abs(d) > 8) moved.current = true; setDx(Math.max(0, d)); } }}
+      onTouchEnd={(e) => { const d = raw.current; start.current = null; raw.current = 0; if (d > 80) { e.stopPropagation(); setDx(460); setTimeout(onSwipe, 190); } else setDx(0); }}
       onClick={() => { if (!moved.current) onTap(); }}
-      style={{ transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - Math.abs(dx) / 340), transition: start.current == null ? "transform .2s, opacity .2s" : "none", ...style }}>
+      style={{ transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - dx / 340), transition: start.current == null ? "transform .2s, opacity .2s" : "none", ...style }}>
       {children}
     </div>
   );
