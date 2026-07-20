@@ -94,7 +94,7 @@ function loadState() {
 function seedTasks() {
   const t = todayStr();
   return [
-    { id: uid(), title: "Water the plants", daily: true, streak: 0, assignees: ["tobias", "an"], steps: [], status: "todo", photoProof: false, source: "typed", createdAt: t, comments: [] },
+    { id: "seed-water-plants", seed: true, title: "Water the plants", daily: true, streak: 0, assignees: ["tobias", "an"], steps: [], status: "todo", photoProof: false, source: "typed", createdAt: t, comments: [] },
   ];
 }
 const loadKeys = () => { try { return JSON.parse(localStorage.getItem(LS_KEYS)) || {}; } catch (e) { return {}; } };
@@ -418,15 +418,16 @@ function App() {
         const remote = await sbPullAll(); if (!alive || !remote) return;
         const local = stateRef.current;
         const remoteIds = new Set(remote.tasks.map((t) => t.id));
+        const localKeep = remote.tasks.length ? local.tasks.filter((t) => !t.seed) : local.tasks;
         const merged = {
           household: remote.household || local.household,
-          tasks: [...remote.tasks, ...local.tasks.filter((t) => !remoteIds.has(t.id))],
+          tasks: [...remote.tasks, ...localKeep.filter((t) => !remoteIds.has(t.id))],
           nudges: remote.nudges.length ? remote.nudges : local.nudges,
           outlookCache: { ...(local.outlookCache || {}), ...(remote.outlookCache || {}) },
         };
         persist(merged); setSyncStatus("connected");
         if (!remote.household) sbPushHousehold(merged.household).catch(() => {});
-        local.tasks.filter((t) => !remoteIds.has(t.id)).forEach((t) => sbPushTask(t).catch(() => {}));
+        localKeep.filter((t) => !remoteIds.has(t.id)).forEach((t) => sbPushTask(t).catch(() => {}));
       } catch (e) { setSyncStatus("error"); }
     })();
     const ch = s.channel("tandem")
@@ -1338,11 +1339,7 @@ function Sharing({ state, me, nav, saveHousehold }) {
           </div>
         </div>
       ))}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "1.5px dashed " + C.line, borderRadius: 20, padding: "14px 16px", marginBottom: 16 }}>
-        <span style={{ fontSize: 17, color: C.terra, fontWeight: 700 }}>+</span>
-        <div style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: C.ink2 }}>Invite someone with a link</div>
-        <span style={{ fontSize: 10.5, fontWeight: 600, color: C.mut, fontFamily: "'JetBrains Mono',monospace" }}>after Supabase setup</span>
-      </div>
+      <InviteCard />
       <Kicker>Household</Kicker>
       <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", marginBottom: 9, boxShadow: shadow }}>
         <div style={{ flex: 1 }}><div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Photo proof by default</div><div style={{ fontSize: 12, fontWeight: 600, color: C.mut, marginTop: 2 }}>Ask for an "after" photo on chores & projects</div></div>
@@ -1354,6 +1351,29 @@ function Sharing({ state, me, nav, saveHousehold }) {
       </div>
     </div>
   </>);
+}
+
+function InviteCard() {
+  const [msg, setMsg] = useState("");
+  const k = loadKeys();
+  const ready = k.supabaseUrl && k.supabaseAnon;
+  const makeLink = () => location.origin + location.pathname + "#join=" + encodeURIComponent(btoa(k.supabaseUrl + "|" + k.supabaseAnon));
+  const copy = async () => {
+    if (!ready) { setMsg("Connect this phone to Supabase first — then the link can carry the connection."); return; }
+    const link = makeLink();
+    try { await navigator.clipboard.writeText(link); setMsg("Copied — send it however you like. Opening it connects their phone in one tap."); }
+    catch (e) { setMsg(link); }
+  };
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div onClick={copy} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "1.5px dashed " + C.line, borderRadius: 20, padding: "14px 16px", cursor: "pointer" }}>
+        <span style={{ fontSize: 17, color: C.terra, fontWeight: 700 }}>+</span>
+        <div style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: C.ink2 }}>Invite someone with a link</div>
+        <span style={{ fontSize: 10.5, fontWeight: 600, color: C.mut, fontFamily: "'JetBrains Mono',monospace" }}>{ready ? "tap to copy" : "connect first"}</span>
+      </div>
+      {msg && <div style={{ fontSize: 11.5, fontWeight: 600, color: C.oliveDark, lineHeight: 1.5, margin: "8px 4px 0", wordBreak: "break-all" }}>{msg}</div>}
+    </div>
+  );
 }
 
 /* ---------- Settings (gear) ---------- */
@@ -1432,6 +1452,17 @@ function Settings({ state, me, nav, syncStatus, setSyncStatus }) {
     </div>
   </>);
 }
+
+/* ---------- join link: #join=<base64 url|anonkey> connects a new phone with one tap ---------- */
+(function () {
+  try {
+    const m = location.hash.match(/#join=([^&]+)/);
+    if (m) {
+      const [u, k] = atob(decodeURIComponent(m[1])).split("|");
+      if (u && k) { saveKeys({ ...loadKeys(), supabaseUrl: u.trim(), supabaseAnon: k.trim() }); history.replaceState(null, "", location.pathname); }
+    }
+  } catch (e) {}
+})();
 
 /* ---------- mount ---------- */
 const style = document.createElement("style");
