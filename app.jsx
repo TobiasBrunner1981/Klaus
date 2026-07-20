@@ -32,11 +32,24 @@ function fmtDue(t) {
   let day = diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : diff > 1 && diff < 7 ? DAYNAME[d.getDay()] : d.getDate() + " " + d.toLocaleString("en-GB", { month: "short" });
   return t.dueTime ? day + " " + t.dueTime : day;
 }
+function shortDay(ds) {
+  const d = new Date(ds + "T00:00:00"); const today = new Date(todayStr() + "T00:00:00");
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return "today"; if (diff === 1) return "tomorrow";
+  if (diff > 1 && diff < 7) return DAYNAME[d.getDay()];
+  return d.getDate() + " " + d.toLocaleString("en-GB", { month: "short" });
+}
 function relDuePill(t) {
   if (t.daily) return { text: (t.streak || 0) + (t.streak === 1 ? " day" : " days"), fg: C.oliveDark, bg: C.oliveSoft };
-  if (!t.dueDate) return null;
-  const diff = Math.round((new Date(t.dueDate) - new Date(todayStr())) / 86400000);
+  const ref = t.deadline || t.dueDate;
+  if (!ref) return null;
+  const diff = Math.round((new Date(ref) - new Date(todayStr())) / 86400000);
   if (diff < 0) return { text: "overdue", fg: C.terraDark, bg: C.terraSoft };
+  if (t.deadline) {
+    if (diff === 0) return { text: "due today", fg: C.terraDark, bg: C.terraSoft };
+    if (diff <= 3) return { text: "due in " + diff + (diff === 1 ? " day" : " days"), fg: C.terraDark, bg: C.terraSoft };
+    return { text: "by " + shortDay(t.deadline), fg: C.ink2, bg: C.bg };
+  }
   if (diff === 0) return { text: "today", fg: C.terraDark, bg: C.terraSoft };
   return { text: "in " + diff + (diff === 1 ? " day" : " days"), fg: C.ink2, bg: C.bg };
 }
@@ -480,8 +493,23 @@ function App() {
 
   if (!who) return <Onboard members={state.household.members} onPick={(id) => { localStorage.setItem(LS_DEVICE, JSON.stringify({ who: id })); setWho(id); }} />;
 
-  const nav = (name, params = {}) => setRoute({ name, ...params });
-  const goTab = (t) => { setTab(t); setRoute({ name: t }); };
+  const stackRef = useRef([]);
+  const TABS = ["home", "tasks", "calendar", "nudges"];
+  const nav = (name, params = {}) => { stackRef.current.push(route); if (stackRef.current.length > 20) stackRef.current.shift(); setRoute({ name, ...params }); };
+  const goBack = () => { const prev = stackRef.current.pop(); setRoute(prev || { name: tab }); };
+  const goTab = (t) => { stackRef.current = []; setTab(t); setRoute({ name: t }); };
+  const touchRef = useRef(null);
+  const onTouchStart = (e) => { const t = e.touches[0]; touchRef.current = { x: t.clientX, y: t.clientY, el: e.target }; };
+  const onTouchEnd = (e) => {
+    const st = touchRef.current; touchRef.current = null; if (!st) return;
+    const tag = (st.el?.tagName || "").toLowerCase(); if (tag === "input" || tag === "textarea") return;
+    const t = e.changedTouches[0]; const dx = t.clientX - st.x, dy = t.clientY - st.y;
+    if (Math.abs(dx) < 70 || Math.abs(dy) > 60) return;
+    if (TABS.includes(route.name)) {
+      const idx = TABS.indexOf(route.name); const ni = dx < 0 ? idx + 1 : idx - 1;
+      if (ni >= 0 && ni < TABS.length) goTab(TABS[ni]);
+    } else if (dx > 0) goBack();
+  };
   const screenProps = { state, me, other, saveTask, removeTask, saveHousehold, sendNudge, completeTask, uncompleteTask, nav, goTab, tab, route, syncStatus, setSyncStatus };
 
   let screen;
@@ -498,10 +526,10 @@ function App() {
     case "settings": screen = <Settings {...screenProps} />; break;
     default: screen = <Home {...screenProps} />;
   }
-  return <div style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: C.bg, fontFamily: FONT, display: "flex", flexDirection: "column" }}>{screen}</div>;
+  return <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: C.bg, fontFamily: FONT, display: "flex", flexDirection: "column" }}>{screen}</div>;
 }
 
-const isTodayTask = (t) => t.daily || t.dueDate === todayStr() || (t.dueDate && t.dueDate < todayStr() && t.status !== "done") || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done");
+const isTodayTask = (t) => t.daily || t.dueDate === todayStr() || (t.dueDate && t.dueDate < todayStr() && t.status !== "done") || (t.deadline && t.deadline <= todayStr() && t.status !== "done") || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done");
 
 /* ---------- onboarding ---------- */
 function Onboard({ members, onPick }) {
@@ -552,7 +580,8 @@ function BottomBar({ onText, onPhoto, onScan }) {
         <input value={txt} onChange={(e) => setTxt(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && txt.trim()) { onText(txt.trim()); setTxt(""); } }}
           placeholder="Tell me what needs doing…"
-          style={{ flex: 1, background: C.bg, border: "none", outline: "none", borderRadius: 999, padding: "13px 17px", fontSize: 13.5, fontWeight: 600, color: C.ink, fontFamily: FONT }} />
+          style={{ flex: 1, background: C.bg, border: "none", outline: "none", borderRadius: 999, padding: "13px 17px", fontSize: 13.5, fontWeight: 600, color: C.ink, fontFamily: FONT, minWidth: 0 }} />
+        {txt.trim() && <span onClick={() => { onText(txt.trim()); setTxt(""); }} style={{ width: 40, height: 40, borderRadius: "50%", background: C.oliveSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer", color: C.olive, fontWeight: 800, fontSize: 17 }}>✓</span>}
         <span onClick={() => setSheet(!sheet)} style={{ width: 46, height: 46, borderRadius: "50%", background: C.olive, display: "grid", placeItems: "center", flex: "none", boxShadow: shadowBtn, cursor: "pointer" }}><CameraSvg /></span>
       </div>
       <input ref={photoRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => pick(e, onPhoto)} />
@@ -570,6 +599,7 @@ const heroCopy = (done, total, left, hour) => {
   return ["Nicely underway.", `${done} down, ${left} to go — between you.`];
 };
 function Home({ state, me, other, nav, goTab, tab, saveTask, completeTask, uncompleteTask }) {
+  const [showDone, setShowDone] = useState(false);
   const todays = state.tasks.filter(isTodayTask);
   const done = todays.filter((t) => t.status === "done").length;
   const total = todays.length; const left = total - done;
@@ -582,12 +612,13 @@ function Home({ state, me, other, nav, goTab, tab, saveTask, completeTask, uncom
   const doneList = todays.filter((t) => t.status === "done");
   const addTyped = (text) => {
     const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", daily: false, dueDate: null, photoProof: false, source: "typed", createdAt: todayStr(), comments: [] };
-    saveTask(t); nav("task", { id: t.id, edit: true });
+    saveTask(t); nav("task", { id: t.id, edit: true, create: true });
   };
   const label = (t) => {
     if (t.status === "done") { const by = state.household.members.find((m) => m.id === t.doneBy); return (by ? by.name : "Someone") + " did it" + (t.doneWithPhoto ? " — with a photo" : ""); }
     const w = t.assignees?.includes("together") || t.assignees?.length > 1 ? "Together" : t.assignees?.[0] === me.id ? "Yours" : (other.name + "'s");
     const bits = [w, t.daily ? "Daily" + ((t.streak || 0) > 0 ? " · " + t.streak + " days running" : "") : fmtDue(t)];
+    if (t.deadline) bits.push("due by " + shortDay(t.deadline));
     if (t.photoProof && !t.daily) bits.push("photo when done");
     return bits.join(" · ");
   };
@@ -610,19 +641,25 @@ function Home({ state, me, other, nav, goTab, tab, saveTask, completeTask, uncom
         </div>
       )}
       <div style={{ fontSize: 13, fontWeight: 700, color: C.mut, margin: "20px 2px 8px" }}>{new Date().getHours() < 12 ? "This morning" : new Date().getHours() < 18 ? "This afternoon" : "This evening"}</div>
-      {doneList.map((t) => (
-        <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, opacity: 0.65, cursor: "pointer" }}>
-          <CheckCircle state="done" onClick={(e) => { e.stopPropagation(); uncompleteTask(t); }} />
-          <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.strike, textDecoration: "line-through" }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.faint, marginTop: 1 }}>{label(t)}</div></div>
-          {(t.photoAfter || t.photoBefore) && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoAfter || t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
-        </div>
-      ))}
       {open.map((t) => (
         <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, cursor: "pointer" }}>
           <CheckCircle state={t.status === "active" ? "active" : "todo"} onClick={(e) => { e.stopPropagation(); t.photoProof ? nav("task", { id: t.id }) : completeTask(t); }} />
           <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.mut, marginTop: 1 }}>{label(t)}</div></div>
           {t.daily && (t.streak || 0) > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap" }}>{t.streak} days</span>}
           {t.photoBefore && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
+        </div>
+      ))}
+      {doneList.length > 0 && (
+        <div onClick={() => setShowDone(!showDone)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px 10px", cursor: "pointer" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: C.mut }}>Done today · {doneList.length}</span>
+          <span style={{ fontSize: 11, color: C.faint, transform: showDone ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▾</span>
+        </div>
+      )}
+      {showDone && doneList.map((t) => (
+        <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, opacity: 0.65, cursor: "pointer" }}>
+          <CheckCircle state="done" onClick={(e) => { e.stopPropagation(); uncompleteTask(t); }} />
+          <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.strike, textDecoration: "line-through" }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.faint, marginTop: 1 }}>{label(t)}</div></div>
+          {(t.photoAfter || t.photoBefore) && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoAfter || t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
         </div>
       ))}
       {total === 0 && <div style={{ fontSize: 13, color: C.mut, fontWeight: 600, textAlign: "center", padding: "18px 0" }}>Type below, or snap a photo of the job.</div>}
@@ -639,7 +676,7 @@ function Tasks({ state, me, other, nav, goTab, tab, saveTask, completeTask }) {
   const doneRecent = state.tasks.filter((t) => t.status === "done" && t.doneAt && Date.now() - new Date(t.doneAt) < 3 * 86400000);
   const forPerson = (id) => [...open, ...doneRecent].filter((t) => t.assignees?.includes(id) || t.assignees?.includes("together") || (t.assignees?.length || 0) > 1 && t.assignees.includes(id));
   const st = state.household.streak || { count: 0 };
-  const addTyped = (text) => { const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", photoProof: false, source: "typed", createdAt: todayStr(), comments: [] }; saveTask(t); nav("task", { id: t.id, edit: true }); };
+  const addTyped = (text) => { const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", photoProof: false, source: "typed", createdAt: todayStr(), comments: [] }; saveTask(t); nav("task", { id: t.id, edit: true, create: true }); };
   const Mini = ({ t }) => {
     const doneT = t.status === "done"; const pill = !doneT && relDuePill(t);
     return (
@@ -648,7 +685,7 @@ function Tasks({ state, me, other, nav, goTab, tab, saveTask, completeTask }) {
         <div style={{ padding: t.photoBefore ? "10px 13px" : "12px 13px" }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25, color: doneT ? C.strike : C.ink, textDecoration: doneT ? "line-through" : "none" }}>{t.title}</div>
           <div style={{ fontSize: 11, fontWeight: 600, color: doneT ? C.olive : C.mut, marginTop: 3 }}>
-            {doneT ? (t.doneWithPhoto ? "Done with photo" : "Done " + new Date(t.doneAt).toTimeString().slice(0, 5)) : fmtDue(t)}
+            {doneT ? (t.doneWithPhoto ? "Done with photo" : "Done " + new Date(t.doneAt).toTimeString().slice(0, 5)) : fmtDue(t) + (t.deadline ? " · due by " + shortDay(t.deadline) : "")}
           </div>
           {!doneT && (t.photoProof || (pill && pill.bg === C.terraSoft)) && (
             <div style={{ display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap" }}>
@@ -735,6 +772,7 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
           {assignee ? <><Avatar m={assignee} size={16} />{assignee.id === me.id ? "Yours" : assignee.name}</> : <>{state.household.members.map((m) => <Avatar key={m.id} m={m} size={16} ring />)}Together</>}
         </span>
         <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: "#54695a", background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{fmtDue(t)}</span>
+        {t.deadline && <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: C.terraDark, background: C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>due by {shortDay(t.deadline)}</span>}
         {t.photoProof && !doneT && <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>photo when done</span>}
         <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 800, color: C.terra, background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{editing ? "Close" : "Edit"}</span>
       </div>
@@ -745,10 +783,16 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
           )).concat(
             <span key="tog" onClick={() => saveTask({ ...t, assignees: ["together"] })} style={{ fontSize: 12, fontWeight: 700, color: t.assignees?.includes("together") ? "#fff" : C.ink2, background: t.assignees?.includes("together") ? C.ink : C.bg, borderRadius: 999, padding: "8px 13px", cursor: "pointer" }}>Together</span>
           ))}
-          {editRow("When", <>
+          {editRow("On", <>
             {dateChip("Anytime", null)}{dateChip("Today", todayStr())}{dateChip("Tomorrow", todayStr(addDays(new Date(), 1)))}{dateChip("Saturday", nextSaturday())}
             <input type="date" value={t.dueDate || ""} onChange={(e) => setDue(e.target.value || null)}
               style={{ background: C.bg, border: "none", outline: "none", borderRadius: 10, padding: "7px 10px", fontSize: 12.5, fontWeight: 700, color: C.ink, fontFamily: FONT }} />
+          </>)}
+          {editRow("Due by", <>
+            <input type="date" value={t.deadline || ""} onChange={(e) => saveTask({ ...t, deadline: e.target.value || null })}
+              style={{ background: C.bg, border: "none", outline: "none", borderRadius: 10, padding: "7px 10px", fontSize: 12.5, fontWeight: 700, color: C.ink, fontFamily: FONT }} />
+            {t.deadline && <span onClick={() => saveTask({ ...t, deadline: null })} style={{ fontSize: 14, color: C.faint, cursor: "pointer", padding: "0 4px" }}>×</span>}
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>deadline — plan it any day before</span>
           </>)}
           {t.dueDate && !t.daily && editRow("At", <>
             {timeInput(t.dueTime, (v) => saveTask({ ...t, dueTime: v || null }))}
@@ -811,7 +855,7 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
           <div style={{ flex: 1, fontSize: 13, color: "#54695a", lineHeight: 1.45 }}><b style={{ color: C.ink }}>{fmtDue({ dueDate: t.reminder.at.slice(0, 10) })} {t.reminder.at.slice(11, 16)} reminder</b> — and {other.name} hears the good news the moment it's done.</div>
         </div>
       )}
-      {(t.comments || []).map((c, i) => {
+      {!route.create && (t.comments || []).map((c, i) => {
         const by = state.household.members.find((m) => m.id === c.by) || other;
         return (
           <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 12, flexDirection: c.by === me.id ? "row-reverse" : "row" }}>
@@ -820,12 +864,17 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
           </div>
         );
       })}
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+      {!route.create && <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <input value={comment} onChange={(e) => setComment(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && comment.trim()) { saveTask({ ...t, comments: [...(t.comments || []), { by: me.id, text: comment.trim(), ts: new Date().toISOString() }] }); setComment(""); } }}
           placeholder="Add a comment…" style={{ flex: 1, background: "#fff", border: "none", outline: "none", borderRadius: 999, padding: "11px 15px", fontSize: 13, fontWeight: 600, color: C.ink, fontFamily: FONT, boxShadow: shadow }} />
-      </div>
-      {!doneT ? (
+      </div>}
+      {route.create ? (
+        <>
+          <PrimaryBtn style={{ marginTop: 16 }} onClick={() => nav("home")}>Save task</PrimaryBtn>
+          <div onClick={() => { removeTask(t.id); nav("home"); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 12, cursor: "pointer" }}>Discard</div>
+        </>
+      ) : !doneT ? (
         <div style={{ display: "flex", gap: 9, marginTop: 16 }}>
           <div onClick={() => finRef.current.click()} style={{ flex: 1.6, background: C.olive, color: "#fff", borderRadius: 999, padding: 15, fontSize: 14.5, fontWeight: 700, textAlign: "center", boxShadow: shadowBtn, cursor: "pointer" }}>Finish with a photo</div>
           <div onClick={() => { completeTask(t); nav("home"); }} style={{ flex: 1, background: "#fff", borderRadius: 999, padding: 15, fontSize: 14, fontWeight: 700, color: "#748078", textAlign: "center", boxShadow: "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}>Mark done</div>
@@ -835,7 +884,7 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
           <div onClick={() => uncompleteTask(t)} style={{ flex: 1, background: "#fff", borderRadius: 999, padding: 15, fontSize: 14, fontWeight: 700, color: "#748078", textAlign: "center", boxShadow: "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}>Bring it back</div>
         </div>
       )}
-      <div onClick={() => { removeTask(t.id); nav("home"); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 14, cursor: "pointer" }}>Remove task</div>
+      {!route.create && <div onClick={() => { removeTask(t.id); nav("home"); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 14, cursor: "pointer" }}>Remove task</div>}
       <input ref={finRef} type="file" accept="image/*" capture="environment" hidden onChange={pickFinish} />
     </div>
   </>);
@@ -885,7 +934,7 @@ function AddFromPhoto({ state, me, other, nav, photo, saveTask }) {
     };
     saveTask(t);
     sbUploadPhoto(photo, "before-" + t.id).then((url) => { if (url !== photo) saveTask({ ...t, photoBefore: url }); });
-    nav("home");
+    nav("task", { id: t.id, edit: true });
   };
   const chip = (label, on, fn) => (
     <span onClick={fn} style={{ background: "#fff", borderRadius: 999, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, color: on ? C.ink : C.ink2, boxShadow: "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}><span style={{ color: C.terra }}>↳ </span>{label}</span>
@@ -948,11 +997,12 @@ function ScanNote({ state, me, other, nav, photo, saveTask }) {
     if (res.kind === "list" && choice !== "each" && res.items?.length) {
       const t = { id: uid(), title: res.title || "Weekly shop", listItems: res.items.map((x) => ({ text: x, done: false })), steps: [], assignees: choice === "mine" ? [me.id] : ["together"], status: "todo", photoProof: false, photoBefore: photo, source: "note", createdAt: todayStr(), comments: [] };
       saveTask(t); sbUploadPhoto(photo, "note-" + t.id).then((u) => { if (u !== photo) saveTask({ ...t, photoBefore: u }); });
+      nav("task", { id: t.id, edit: true }); return;
     } else if (choice === "each" && res.items?.length) {
       res.items.forEach((it) => saveTask({ id: uid(), title: it, steps: [], assignees: [me.id], status: "todo", photoProof: false, source: "note", createdAt: todayStr(), comments: [] }));
     } else {
       const t = { id: uid(), title: res.title || "From your note", steps: [], assignees: [me.id], status: "todo", photoProof: false, photoBefore: photo, source: "note", createdAt: todayStr(), comments: [] };
-      saveTask(t);
+      saveTask(t); nav("task", { id: t.id, edit: true }); return;
     }
     nav("home");
   };
@@ -1050,7 +1100,7 @@ function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeT
           <div><div style={{ fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color: C.olive, fontWeight: 800 }}>Done and dusted</div>
             <div style={{ fontSize: 13, lineHeight: 1.5, color: C.oliveDark, marginTop: 4, fontWeight: 600 }}>{ver.note}</div></div>
         </div>
-        <PrimaryBtn style={{ marginTop: 15 }} onClick={() => { sendNudge(other.id, "Done \u2713 " + t.title + " \u2014 with a photo to prove it"); nav("home"); }}>Send it to {other.name}</PrimaryBtn>
+        <PrimaryBtn style={{ marginTop: 15 }} onClick={() => { sendNudge(other.id, "Done ✓ " + t.title + " — with a photo to prove it"); nav("home"); }}>Send it to {other.name}</PrimaryBtn>
         <div onClick={() => { const cur = state.tasks.find((x) => x.id === t.id); saveTask({ ...cur, status: "todo", doneAt: null, doneBy: null, doneWithPhoto: false, photoAfter: null }); nav("task", { id: t.id }); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 12, cursor: "pointer" }}>Undo</div>
       </>)}
     </div>
