@@ -56,6 +56,16 @@ function relDuePill(t) {
   return { text: "in " + diff + (diff === 1 ? " day" : " days"), fg: C.ink2, bg: C.bg };
 }
 
+function taskSortKey(t) {
+  /* slot each task on its relevant day: "on" tasks (and daily) on their action day,
+     deadline-only tasks on their deadline day; within a day, on-day before deadline,
+     each chronological by time; untimed on-day items lead the day; anytime tasks last. */
+  const day = t.daily ? todayStr() : (t.dueDate || t.deadline || "9999-12-31");
+  const type = (t.daily || t.dueDate) ? "0" : "1";
+  const time = t.daily ? "00:00" : t.dueDate ? (t.dueTime || "00:01") : (t.deadlineTime || "23:59");
+  return day + "|" + type + "|" + time + "|" + (t.title || "").toLowerCase();
+}
+const sortTasks = (arr) => [...arr].sort((a, b) => taskSortKey(a).localeCompare(taskSortKey(b)));
 function deadlineLabel(t) {
   if (!t.deadline) return null;
   if (t.deadline === t.dueDate && !t.deadlineTime) return null;
@@ -799,7 +809,7 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
   const [big, small] = heroCopy(done, total, left, new Date().getHours());
   const nudge = [...state.nudges].reverse().find((n) => n.to === me.id && !readIds.includes(n.id) && Date.now() - new Date(n.ts) < 48 * 3600000);
   const nudgeFrom = nudge && state.household.members.find((m) => m.id === nudge.from);
-  const open = todays.filter((t) => t.status !== "done");
+  const open = sortTasks(todays.filter((t) => t.status !== "done"));
   const doneList = todays.filter((t) => t.status === "done");
   const label = (t) => {
     if (t.status === "done") { const by = state.household.members.find((m) => m.id === t.doneBy); return (by ? by.name : "Someone") + " did it" + (t.doneWithPhoto ? " — with a photo" : ""); }
@@ -864,7 +874,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
   const [showDone, setShowDone] = useState(false);
   const open = state.tasks.filter((t) => t.status !== "done" && t.kind !== "info");
   const doneRecent = state.tasks.filter((t) => t.kind !== "info" && t.status === "done" && t.doneAt && Date.now() - new Date(t.doneAt) < 3 * 86400000);
-  const forPerson = (id) => open.filter((t) => t.assignees?.includes(id) || t.assignees?.includes("together"));
+  const forPerson = (id) => sortTasks(open.filter((t) => t.assignees?.includes(id) || t.assignees?.includes("together")));
   const st = state.household.streak || { count: 0 };
   const Mini = ({ t }) => {
     const doneT = t.status === "done"; const pill = !doneT && relDuePill(t);
@@ -901,7 +911,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
           ))}
         </div>
       ) : (
-        <div>{open.map((t) => <Mini key={t.id} t={t} />)}</div>
+        <div>{sortTasks(open).map((t) => <Mini key={t.id} t={t} />)}</div>
       )}
       {doneRecent.length > 0 && (
         <div onClick={() => setShowDone(!showDone)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 2px 10px", cursor: "pointer" }}>
