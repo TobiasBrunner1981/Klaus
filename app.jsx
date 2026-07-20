@@ -223,7 +223,7 @@ async function parseTyped(text) {
 async function aiSmartPhoto(dataUrl, members) {
   const names = members.map((m) => m.name).join(" and ");
   const txt = await claude([{ role: "user", content: [imgBlock(dataUrl), { type: "text", text:
-    `You help a two-person household (${names}). Look at this photo and work out what they're doing. Reply ONLY JSON: {"kind":"job"|"note","seen":"one short warm sentence about what you recognised","title":"short title (if shopping, use Shopping)","steps":["2-4 short steps, only for a job, else []"],"items":["items read from a note/list, deduplicated, else []"],"shopping":true|false,"assignee":"${members[0].id}"|"${members[1].id}"|"together","why":"one warm first-person sentence on who and when","photoProof":true|false}. kind is "note" for paper notes, lists, handwriting, receipts; "job" for a thing to do/fix/clean.` }] }]);
+    `You help a two-person household (${names}). Look at this photo and work out what they're doing. Reply ONLY JSON: {"kind":"job"|"note"|"info","seen":"one short warm sentence about what you recognised","title":"short title (if shopping, use Shopping)","steps":["2-4 short steps, only for a job, else []"],"items":["lines or items read from the photo, in order, deduplicated, else []"],"shopping":true|false,"assignee":"${members[0].id}"|"${members[1].id}"|"together","why":"one warm first-person sentence — for info, say why it's worth keeping","photoProof":true|false}. kind: "job" = a thing to do/fix/clean; "note" = an actionable list (shopping, errands, to-dos); "info" = knowledge with NO action needed — meal plans, weekly menus, schedules, timetables, wifi codes, instructions, recipes, opening hours, posters. For info, put each line of the content into items (e.g. "Monday — pasta").` }] }]);
   return asJson(txt);
 }
 const NUDGE_LINES = [
@@ -298,6 +298,7 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
   const writeMode = access === "write" || access === "readwrite";
   for (const t of st.tasks) {
     const cur = stateRef.current.tasks.find((x) => x.id === t.id); if (!cur) continue;
+    if (cur.kind === "info") continue;
     const mine = cur.assignees?.includes(meId) || cur.assignees?.includes("together");
     const rec = cur.outlook?.[meId];
     try {
@@ -442,6 +443,7 @@ function App() {
   const other = state.household.members.find((m) => m.id !== me.id) || state.household.members[1];
 
   /* --- mutations (push per-entity when Supabase is connected) --- */
+  const patchTask = (id, patch) => { const cur = stateRef.current.tasks.find((x) => x.id === id); if (cur) saveTask({ ...cur, ...patch }); };
   const outlookKick = useRef(null);
   const scheduleOutlookSync = () => {
     if (outlookKick.current) clearTimeout(outlookKick.current);
@@ -576,7 +578,7 @@ function App() {
   const addTyped = async (text) => {
     const p = await parseTyped(text);
     if (p.shopping) {
-      const ex = stateRef.current.tasks.find((x) => x.status !== "done" && (x.shopping || /shopping|groceries/i.test(x.title)));
+      const ex = stateRef.current.tasks.find((x) => x.kind !== "info" && x.status !== "done" && (x.shopping || /shopping|groceries/i.test(x.title)));
       if (ex) {
         const items = [...(ex.listItems || []), ...p.items.map((i) => ({ text: i, done: false }))];
         const on = p.on || ex.dueDate;
@@ -601,7 +603,7 @@ function App() {
   if (!who) return <Onboard members={state.household.members} onPick={(id) => { localStorage.setItem(LS_DEVICE, JSON.stringify({ who: id })); setWho(id); }} />;
 
   const stackRef = useRef([]);
-  const TABS = ["home", "tasks", "calendar", "nudges"];
+  const TABS = ["home", "tasks", "calendar", "info"];
   const nav = (name, params = {}) => { stackRef.current.push(route); if (stackRef.current.length > 20) stackRef.current.shift(); if (TABS.includes(name)) setTab(name); setRoute({ name, ...params }); };
   const goBack = () => { const prev = stackRef.current.pop() || { name: tab }; if (TABS.includes(prev.name)) setTab(prev.name); setRoute(prev); };
   const goTab = (t) => { stackRef.current = []; setTab(t); setRoute({ name: t }); };
@@ -617,14 +619,15 @@ function App() {
       if (ni >= 0 && ni < TABS.length) goTab(TABS[ni]);
     } else if (dx > 0) goBack();
   };
-  const screenProps = { state, me, other, saveTask, removeTask, saveHousehold, sendNudge, completeTask, uncompleteTask, addTyped, nav, goBack, goTab, tab, route, syncStatus, setSyncStatus };
+  const screenProps = { state, me, other, saveTask, removeTask, saveHousehold, sendNudge, completeTask, uncompleteTask, addTyped, patchTask, nav, goBack, goTab, tab, route, syncStatus, setSyncStatus };
 
   let screen;
   switch (route.name) {
     case "home": screen = <Home {...screenProps} />; break;
     case "tasks": screen = <Tasks {...screenProps} />; break;
     case "calendar": screen = <CalendarView {...screenProps} />; break;
-    case "nudges": screen = <Reminders {...screenProps} />; break;
+    case "info": screen = <InfoList {...screenProps} />; break;
+    case "infoItem": screen = <InfoDetail {...screenProps} infoId={route.id} />; break;
     case "task": screen = <TaskDetail {...screenProps} taskId={route.id} />; break;
     case "addPhoto": screen = <AddFromPhoto {...screenProps} photo={route.photo} />; break;
     case "finish": screen = <FinishPhoto {...screenProps} taskId={route.id} photo={route.photo} />; break;
@@ -635,7 +638,7 @@ function App() {
   return <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: C.bg, fontFamily: FONT, display: "flex", flexDirection: "column" }}>{screen}</div>;
 }
 
-const isTodayTask = (t) => t.daily || t.dueDate === todayStr() || (t.dueDate && t.dueDate < todayStr() && t.status !== "done") || (t.deadline && t.deadline <= todayStr() && t.status !== "done") || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done");
+const isTodayTask = (t) => t.kind !== "info" && (t.daily || t.dueDate === todayStr() || (t.dueDate && t.dueDate < todayStr() && t.status !== "done") || (t.deadline && t.deadline <= todayStr() && t.status !== "done") || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done"));
 
 /* ---------- onboarding ---------- */
 function Onboard({ members, onPick }) {
@@ -662,7 +665,7 @@ function TabStrip({ tab, goTab }) {
   return (
     <div style={{ padding: "6px 20px 4px" }}>
       <SegPill value={tab} onChange={goTab} options={[
-        { value: "home", label: "Today" }, { value: "tasks", label: "Tasks" }, { value: "calendar", label: "Calendar" }, { value: "nudges", label: "Nudges" },
+        { value: "home", label: "Today" }, { value: "tasks", label: "Tasks" }, { value: "calendar", label: "Calendar" }, { value: "info", label: "Info" },
       ]} />
     </div>
   );
@@ -757,7 +760,7 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
         </div>
         <div style={{ flex: 1 }}><div style={{ fontSize: 16, fontWeight: 700, color: C.ink, lineHeight: 1.3 }}>{big}</div><div style={{ fontSize: 13, color: C.mut, marginTop: 4, lineHeight: 1.45 }}>{small}</div></div>
       </div>
-      {nudge && <NudgeCard nudge={nudge} from={nudgeFrom} onDismiss={() => markRead(nudge.id)} onOpen={() => (nudge.taskId && state.tasks.some((t) => t.id === nudge.taskId)) ? nav("task", { id: nudge.taskId }) : goTab("nudges")} />}
+      {nudge && <NudgeCard nudge={nudge} from={nudgeFrom} onDismiss={() => markRead(nudge.id)} onOpen={() => (nudge.taskId && state.tasks.some((t) => t.id === nudge.taskId)) ? nav("task", { id: nudge.taskId }) : markRead(nudge.id)} />}
       <div style={{ fontSize: 13, fontWeight: 700, color: C.mut, margin: "20px 2px 8px" }}>{new Date().getHours() < 12 ? "This morning" : new Date().getHours() < 18 ? "This afternoon" : "This evening"}</div>
       {open.map((t) => (
         <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, cursor: "pointer" }}>
@@ -791,8 +794,8 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
 function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
   const [mode, setMode] = useState("person");
   const [showDone, setShowDone] = useState(false);
-  const open = state.tasks.filter((t) => t.status !== "done");
-  const doneRecent = state.tasks.filter((t) => t.status === "done" && t.doneAt && Date.now() - new Date(t.doneAt) < 3 * 86400000);
+  const open = state.tasks.filter((t) => t.status !== "done" && t.kind !== "info");
+  const doneRecent = state.tasks.filter((t) => t.kind !== "info" && t.status === "done" && t.doneAt && Date.now() - new Date(t.doneAt) < 3 * 86400000);
   const forPerson = (id) => open.filter((t) => t.assignees?.includes(id) || t.assignees?.includes("together"));
   const st = state.household.streak || { count: 0 };
   const Mini = ({ t }) => {
@@ -851,13 +854,14 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
 }
 
 /* ---------- 8c Task detail ---------- */
-function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, removeTask, completeTask, uncompleteTask }) {
+function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, removeTask, completeTask, uncompleteTask, sendNudge }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const finRef = useRef();
   const [comment, setComment] = useState("");
   const [editing, setEditing] = useState(!!route.edit);
   const [editTitle, setEditTitle] = useState(!!route.edit && !!route.create);
   const [newStep, setNewStep] = useState("");
+  const [nudged, setNudged] = useState("");
   if (!t) return <div style={{ padding: 24, fontSize: 14, color: C.mut, fontWeight: 600 }}>That task is gone. <span onClick={() => nav("home")} style={{ color: C.olive, cursor: "pointer" }}>Back home.</span></div>;
   const assignee = t.assignees?.includes("together") || (t.assignees?.length || 0) > 1 ? null : state.household.members.find((m) => m.id === t.assignees?.[0]);
   const toggleStep = (i) => { const steps = t.steps.map((s, j) => (j === i ? { ...s, done: !s.done } : s)); saveTask({ ...t, steps, status: t.status === "todo" && steps.some((s) => s.done) ? "active" : t.status }); };
@@ -869,6 +873,15 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
   const pickFinish = async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (!f) return; nav("finish", { id: t.id, photo: await downscale(f) }); };
   const doneT = t.status === "done";
   const dlText = deadlineLabel(t);
+  const nudgeTargets = t.assignees?.includes("together") ? [other.id] : (t.assignees || []).filter((id) => id !== me.id);
+  const doNudge = () => {
+    if (!nudgeTargets.length) return;
+    const msg = NUDGE_LINES[Math.floor(Math.random() * NUDGE_LINES.length)](t.title);
+    nudgeTargets.forEach((id) => sendNudge(id, msg, t.id));
+    const name = state.household.members.find((m) => m.id === nudgeTargets[0])?.name || "them";
+    setNudged("Nudged " + name + " — a little heart is waiting on their home screen.");
+    setTimeout(() => setNudged(""), 2600);
+  };
   const dateChip = (label, val) => (
     <span onClick={() => setDue(val)} style={{ fontSize: 12, fontWeight: 700, color: t.dueDate === val && !t.daily ? "#fff" : C.ink2, background: t.dueDate === val && !t.daily ? C.ink : C.bg, borderRadius: 999, padding: "8px 13px", cursor: "pointer", whiteSpace: "nowrap" }}>{label}</span>
   );
@@ -1006,6 +1019,13 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
       ) : !doneT ? (
         <>
           <div onClick={() => setEditing(!editing)} style={{ marginTop: 16, background: "#fff", borderRadius: 999, padding: 15, fontSize: 14.5, fontWeight: 800, color: C.ink, textAlign: "center", boxShadow: shadow, cursor: "pointer" }}>{editing ? "Close editor" : "Edit task"}</div>
+          {nudgeTargets.length > 0 && (
+            <div onClick={doNudge} style={{ marginTop: 10, background: C.terraSoft, color: C.terraDark, borderRadius: 999, padding: 14, fontSize: 14, fontWeight: 800, textAlign: "center", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke={C.terra} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.3a8.3 8.3 0 01-8.3 8.3c-1.2 0-2.3-.2-3.3-.7L4.2 20.6l1.6-4A8.3 8.3 0 1121 11.3z" /><path d="M12.4 14.6l-2.7-2.6c-2.5-2.4 1.1-5.2 2.7-3 1.6-2.2 5.2.6 2.7 3z" fill={C.terra} stroke="none" /></svg>
+              Nudge {state.household.members.find((m) => m.id === nudgeTargets[0])?.name} about this
+            </div>
+          )}
+          {nudged && <div style={{ fontSize: 12.5, color: C.terraDark, fontWeight: 700, marginTop: 10, textAlign: "center" }}>{nudged}</div>}
           <div style={{ display: "flex", gap: 9, marginTop: 10 }}>
             <div onClick={() => finRef.current.click()} style={{ flex: 1.6, background: C.olive, color: "#fff", borderRadius: 999, padding: 15, fontSize: 14.5, fontWeight: 700, textAlign: "center", boxShadow: shadowBtn, cursor: "pointer" }}>Finish with a photo</div>
             <div onClick={() => { completeTask(t); nav("home"); }} style={{ flex: 1, background: "#fff", borderRadius: 999, padding: 15, fontSize: 14, fontWeight: 700, color: "#748078", textAlign: "center", boxShadow: "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}>Mark done</div>
@@ -1025,7 +1045,7 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
 function nextSaturday() { const d = new Date(); d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7 || 7)); return todayStr(d); }
 
 /* ---------- 8d Smart capture: one camera, Klaus works out the rest ---------- */
-function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask }) {
+function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask, patchTask }) {
   const [draft, setDraft] = useState(null);
   const [failed, setFailed] = useState(false);
   const [title, setTitle] = useState("");
@@ -1040,51 +1060,70 @@ function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask }) {
       } catch (e) {
         if (!alive) return;
         setFailed(true);
-        const d = { kind: "job", seen: "Saved your photo with the task", title: "New task from your photo", steps: [], items: [], shopping: false, assignee: me.id, why: "Give it a title and I'll keep the photo attached. Add your Claude key in Settings and I'll work out photos for you next time.", photoProof: true };
+        const d = { kind: "job", seen: "Saved your photo with the task", title: "New task from your photo", steps: [], items: [], shopping: false, assignee: me.id, why: "Give it a title and I'll keep the photo attached. Add your Claude key in Settings and I'll work photos out for you next time.", photoProof: true };
         setDraft(d); setTitle(d.title);
       }
     })();
     return () => { alive = false; };
   }, []);
-  const isNote = draft?.kind === "note";
+  const kind = draft?.kind || "job";
+  const hasItems = (draft?.items?.length || 0) > 0;
+  const [saveMode, setSaveMode] = useState(null);
+  const effSave = saveMode ?? (kind === "info" ? "info" : "task");
+  const wantTask = effSave === "task" || effSave === "both";
+  const wantInfo = effSave === "info" || effSave === "both";
+  const [noteMode, setNoteMode] = useState("list");
+  const [assignee, setAssignee] = useState(null);
+  const [due, setDueC] = useState(null);
+  const [proof, setProof] = useState(null);
+  const effAssignee = assignee ?? draft?.assignee ?? me.id;
+  const effDue = due === null ? (kind === "job" ? "sat" : null) : due;
+  const dueDate = effDue === "sat" ? nextSaturday() : effDue === "tomorrow" ? todayStr(addDays(new Date(), 1)) : effDue === "today" ? todayStr() : null;
+  const effProof = proof ?? (kind === "job" ? (draft?.photoProof ?? state.household.settings.photoProofDefault) : false);
+  const assigneeM = effAssignee === "together" ? null : state.household.members.find((m) => m.id === effAssignee);
   const rows = draft
     ? [draft.seen || stepsLabels[0],
-       isNote ? (draft.items?.length ? "Found " + draft.items.length + " item" + (draft.items.length > 1 ? "s" : "") : "Read the note") : ("Drafted the task" + (draft.steps?.length ? " and " + draft.steps.length + " steps" : "")),
-       draft.assignee === "together" ? "Suggested you take it together" : "Suggested " + (state.household.members.find((m) => m.id === draft.assignee)?.name || me.name)]
+       kind === "info" ? (hasItems ? "Read " + draft.items.length + " line" + (draft.items.length > 1 ? "s" : "") : "Read it through")
+         : kind === "note" ? (hasItems ? "Found " + draft.items.length + " item" + (draft.items.length > 1 ? "s" : "") : "Read the note")
+         : ("Drafted the task" + (draft.steps?.length ? " and " + draft.steps.length + " steps" : "")),
+       kind === "info" ? "Looks like one to keep, not to do"
+         : draft.assignee === "together" ? "Suggested you take it together"
+         : "Suggested " + (state.household.members.find((m) => m.id === draft.assignee)?.name || me.name)]
     : stepsLabels.slice(0, Math.max(1, shown));
-  const [assignee, setAssignee] = useState(null);
-  const [due, setDue] = useState(null);
-  const [proof, setProof] = useState(null);
-  const [noteMode, setNoteMode] = useState("list");
-  const effAssignee = assignee ?? draft?.assignee ?? me.id;
-  const effDue = due === null ? (isNote ? null : "sat") : due;
-  const dueDate = effDue === "sat" ? nextSaturday() : effDue === "tomorrow" ? todayStr(addDays(new Date(), 1)) : effDue === "today" ? todayStr() : null;
-  const effProof = proof ?? (isNote ? false : (draft?.photoProof ?? state.household.settings.photoProofDefault));
-  const assigneeM = effAssignee === "together" ? null : state.household.members.find((m) => m.id === effAssignee);
   const log = () => {
-    if (isNote && noteMode === "each" && draft.items?.length) {
-      draft.items.forEach((it) => saveTask({ id: uid(), title: it, steps: [], assignees: [effAssignee === "together" ? "together" : effAssignee], status: "todo", photoProof: false, source: "note", createdAt: todayStr(), comments: [] }));
-      nav("tasks"); return;
+    let taskId = null, infoId = null;
+    const uploads = [];
+    if (wantTask) {
+      if (kind !== "job" && noteMode === "each" && hasItems) {
+        draft.items.forEach((it) => saveTask({ id: uid(), title: it, steps: [], assignees: [effAssignee === "together" ? "together" : effAssignee], status: "todo", photoProof: false, source: "note", createdAt: todayStr(), comments: [] }));
+      } else {
+        const t = {
+          id: uid(), title: title || "New task",
+          steps: kind === "job" ? (draft?.steps || []).map((x) => ({ text: x, done: false })) : [],
+          listItems: kind !== "job" ? (draft?.items || []).map((x) => ({ text: x, done: false })) : [],
+          shopping: !!draft?.shopping,
+          assignees: [effAssignee === "together" ? "together" : effAssignee],
+          dueDate, dueTime: null, deadline: dueDate, deadlineAuto: true,
+          reminder: dueDate ? { at: dueDate + "T09:00:00" } : null,
+          photoProof: effProof, photoBefore: photo, status: "todo", source: kind === "job" ? "photo" : "note", createdAt: todayStr(), comments: [],
+        };
+        saveTask(t); uploads.push(t.id); taskId = t.id;
+      }
     }
-    const t = {
-      id: uid(), title: title || (isNote ? "From your note" : "New task"),
-      steps: isNote ? [] : (draft?.steps || []).map((x) => ({ text: x, done: false })),
-      listItems: isNote ? (draft.items || []).map((x) => ({ text: x, done: false })) : [],
-      shopping: !!draft?.shopping,
-      assignees: effAssignee === "together" ? ["together"] : [effAssignee],
-      dueDate, dueTime: null, deadline: dueDate, deadlineAuto: true,
-      reminder: dueDate ? { at: dueDate + "T09:00:00" } : null,
-      photoProof: effProof, photoBefore: photo, status: "todo", source: isNote ? "note" : "photo", createdAt: todayStr(), comments: [],
-    };
-    saveTask(t);
-    sbUploadPhoto(photo, "before-" + t.id).then((url) => { if (url !== photo) saveTask({ ...t, photoBefore: url }); });
-    nav("task", { id: t.id, edit: true, create: true });
+    if (wantInfo) {
+      const inf = { id: uid(), kind: "info", title: title || "Worth keeping", listItems: (draft?.items || []).map((x) => ({ text: x, done: false })), photoBefore: photo, status: "todo", assignees: [], createdAt: todayStr(), comments: [] };
+      saveTask(inf); uploads.push(inf.id); infoId = inf.id;
+    }
+    uploads.forEach((id) => sbUploadPhoto(photo, "cap-" + id).then((u) => { if (u !== photo) patchTask(id, { photoBefore: u }); }));
+    if (taskId) nav("task", { id: taskId, edit: true, create: true });
+    else if (infoId) nav("infoItem", { id: infoId });
+    else nav("tasks");
   };
   const chip = (label, on, fn) => (
     <span onClick={fn} style={{ background: on ? C.ink : "#fff", borderRadius: 999, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, color: on ? "#fff" : C.ink2, boxShadow: on ? "none" : "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}><span style={{ color: on ? C.terraSoft : C.terra }}>↳ </span>{label}</span>
   );
   return (<>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>{isNote ? "From your note" : "New task"}</H1></div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>{kind === "info" ? "Worth keeping" : kind === "note" ? "From your note" : "New task"}</H1></div>
     <div style={{ padding: "0 20px 18px" }}>
       <Photo src={photo} h={150} label="your photo · just now" />
       <div style={{ marginTop: 13 }}><AiChecklist rows={rows} running={!draft} /></div>
@@ -1092,43 +1131,51 @@ function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask }) {
         <div style={{ ...card(22), padding: "16px 18px", marginTop: 11 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
             <input value={title} onChange={(e) => setTitle(e.target.value)} style={{ flex: 1, minWidth: 0, border: "none", outline: "none", fontSize: 16, fontWeight: 800, color: C.ink, fontFamily: FONT, background: "transparent", padding: 0 }} />
-            {isNote && draft.items?.length > 0 && <span style={{ fontSize: 12, fontWeight: 700, color: C.terra, flex: "none" }}>{draft.items.length} items</span>}
+            {hasItems && kind !== "job" && <span style={{ fontSize: 12, fontWeight: 700, color: C.terra, flex: "none" }}>{draft.items.length} {kind === "info" ? "lines" : "items"}</span>}
           </div>
-          {!isNote && <div style={{ fontSize: 11.5, fontWeight: 600, color: C.mut, marginTop: 3 }}>{draft.steps?.length ? draft.steps.length + " steps drafted" : "no steps — just the one job"}</div>}
-          {isNote && draft.items?.length > 0 && (
+          {kind === "job" && <div style={{ fontSize: 11.5, fontWeight: 600, color: C.mut, marginTop: 3 }}>{draft.steps?.length ? draft.steps.length + " steps drafted" : "no steps — just the one job"}</div>}
+          {hasItems && kind !== "job" && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
               {draft.items.map((it, i) => <span key={i} style={{ fontSize: 12.5, fontWeight: 600, color: C.ink2, background: C.bg, borderRadius: 999, padding: "7px 13px" }}>{it}</span>)}
             </div>
           )}
           <div style={{ display: "flex", gap: 7, marginTop: 12, flexWrap: "wrap" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: C.ink, background: C.bg, borderRadius: 999, padding: "5px 12px", whiteSpace: "nowrap" }}>
+            {wantTask && <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: C.ink, background: C.bg, borderRadius: 999, padding: "5px 12px", whiteSpace: "nowrap" }}>
               {assigneeM ? <><Avatar m={assigneeM} size={16} />{assigneeM.name}</> : "Together"}
-            </span>
-            <span style={{ fontSize: 11.5, fontWeight: 700, color: C.ink2, background: C.bg, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>{dueDate ? fmtDue({ dueDate }) + " 9:00" : "Anytime"}</span>
-            <span style={{ fontSize: 11.5, fontWeight: 700, color: C.oliveDark, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>saved to Klaus</span>
-            {effProof && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.terraDark, background: C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>photo when done</span>}
+            </span>}
+            {wantTask && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.ink2, background: C.bg, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>{dueDate ? fmtDue({ dueDate }) + " 9:00" : "Anytime"}</span>}
+            {wantTask && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.oliveDark, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>saved as a task</span>}
+            {wantInfo && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.terraDark, background: C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>kept as info</span>}
+            {wantTask && effProof && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.terraDark, background: C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>photo when done</span>}
           </div>
         </div>
         <div style={{ display: "flex", gap: 11, alignItems: "flex-start", background: C.oliveSoft, borderRadius: 20, padding: "14px 16px", marginTop: 11 }}>
           <div><div style={{ fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color: C.olive, fontWeight: 800 }}>My read</div>
             <div style={{ fontSize: 13, lineHeight: 1.5, color: C.oliveDark, marginTop: 4, fontWeight: 600 }}>{draft.why}</div></div>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 13 }}>
-          {isNote && draft.items?.length > 0 && chip("One list", noteMode === "list", () => setNoteMode("list"))}
-          {isNote && draft.items?.length > 0 && chip("Each item its own task", noteMode === "each", () => setNoteMode("each"))}
-          {chip("Give it to " + (effAssignee === other.id ? me.name : other.name), false, () => setAssignee(effAssignee === other.id ? me.id : other.id))}
-          {chip("Do it together", effAssignee === "together", () => setAssignee("together"))}
-          {!isNote && chip(effDue === "sat" ? "Make it tomorrow" : "Make it Saturday", false, () => setDue(effDue === "sat" ? "tomorrow" : "sat"))}
-          {!isNote && chip(effProof ? "No photo needed" : "Ask for a photo", false, () => setProof(!effProof))}
+        {kind !== "job" && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 13 }}>
+            {chip("Make it a task", effSave === "task", () => setSaveMode("task"))}
+            {chip("Keep as info", effSave === "info", () => setSaveMode("info"))}
+            {chip("Both", effSave === "both", () => setSaveMode("both"))}
+          </div>
+        )}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: kind !== "job" ? 8 : 13 }}>
+          {wantTask && hasItems && kind !== "job" && chip("One list", noteMode === "list", () => setNoteMode("list"))}
+          {wantTask && hasItems && kind !== "job" && chip("Each item its own task", noteMode === "each", () => setNoteMode("each"))}
+          {wantTask && chip("Give it to " + (effAssignee === other.id ? me.name : other.name), false, () => setAssignee(effAssignee === other.id ? me.id : other.id))}
+          {wantTask && chip("Do it together", effAssignee === "together", () => setAssignee("together"))}
+          {wantTask && kind === "job" && chip(effDue === "sat" ? "Make it tomorrow" : "Make it Saturday", false, () => setDueC(effDue === "sat" ? "tomorrow" : "sat"))}
+          {wantTask && kind === "job" && chip(effProof ? "No photo needed" : "Ask for a photo", false, () => setProof(!effProof))}
         </div>
-        <PrimaryBtn style={{ marginTop: 15 }} onClick={log}>{isNote ? "Add to the list" : "Log it"}</PrimaryBtn>
+        <PrimaryBtn style={{ marginTop: 15 }} onClick={log}>{effSave === "both" ? "Save both" : wantInfo && !wantTask ? "Keep it" : kind === "job" ? "Log it" : "Add to the list"}</PrimaryBtn>
         {failed && <div style={{ fontSize: 11.5, color: C.mut, fontWeight: 600, textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>Smart drafting needs a Claude key — add one under the gear.</div>}
       </>)}
     </div>
   </>);
 }
 
-/* ---------- 8f Finish with photo ---------- *//* ---------- 8f Finish with photo ---------- */
+/* ---------- 8f Finish with photo ---------- *//* ---------- 8f Finish with photo ---------- *//* ---------- 8f Finish with photo ---------- */
 function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeTask, sendNudge }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const [ver, setVer] = useState(null);
@@ -1189,83 +1236,99 @@ function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeT
 }
 
 /* ---------- 8g Reminders & nudges ---------- */
-function NudgeBtn({ onClick }) {
-  return (
-    <span onClick={onClick} style={{ width: 36, height: 36, borderRadius: "50%", background: C.terraSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer" }}>
-      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke={C.terra} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 11.3a8.3 8.3 0 01-8.3 8.3c-1.2 0-2.3-.2-3.3-.7L4.2 20.6l1.6-4A8.3 8.3 0 1121 11.3z" />
-        <path d="M12.4 14.6l-2.7-2.6c-2.5-2.4 1.1-5.2 2.7-3 1.6-2.2 5.2.6 2.7 3z" fill="currentColor" stroke="none" style={{ color: C.terra }} />
-      </svg>
-    </span>
+function InfoList({ state, nav, goTab, tab, addTyped }) {
+  const [showArch, setShowArch] = useState(false);
+  const infos = state.tasks.filter((t) => t.kind === "info");
+  const bySort = (arr) => [...arr].sort((x, y) => (y.createdAt || "").localeCompare(x.createdAt || ""));
+  const active = bySort(infos.filter((i) => !i.archivedAt));
+  const archived = bySort(infos.filter((i) => i.archivedAt));
+  const Card = ({ t }) => (
+    <div onClick={() => nav("infoItem", { id: t.id })} style={{ ...card(18), marginBottom: 10, overflow: "hidden", cursor: "pointer", opacity: t.archivedAt ? 0.6 : 1 }}>
+      {t.photoBefore && <div style={{ height: 88, position: "relative" }}><img src={t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>}
+      <div style={{ padding: "12px 14px" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{t.title}</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.mut, marginTop: 3 }}>
+          {(t.listItems?.length ? t.listItems.length + " line" + (t.listItems.length > 1 ? "s" : "") + " · " : "")}kept {shortDay(t.createdAt || todayStr())}
+        </div>
+      </div>
+    </div>
   );
-}
-function Reminders({ state, me, other, nav, goTab, tab, saveHousehold, sendNudge }) {
-  const [sent, setSent] = useState("");
-  const open = state.tasks.filter((t) => t.status !== "done");
-  const sched = open.filter((t) => t.reminder?.at || t.daily);
-  const rest = open.filter((t) => !t.reminder?.at && !t.daily);
-  const q = state.household.settings.quietHours;
-  const recent = [...state.nudges].reverse().slice(0, 3);
-  const targetsOf = (t) => t.assignees?.includes("together") ? [other.id] : (t.assignees || []).filter((id) => id !== me.id);
-  const doNudge = (t) => {
-    const tg = targetsOf(t); if (!tg.length) return;
-    const msg = NUDGE_LINES[Math.floor(Math.random() * NUDGE_LINES.length)](t.title);
-    tg.forEach((id) => sendNudge(id, msg, t.id));
-    const name = state.household.members.find((m) => m.id === tg[0])?.name || "them";
-    setSent("Nudged " + name + " — it's waiting on their home screen.");
-    setTimeout(() => setSent(""), 2600);
-  };
-  const Row = ({ t }) => {
-    const together = t.assignees?.includes("together") || (t.assignees?.length || 0) > 1;
-    const m = together ? null : state.household.members.find((x) => x.id === t.assignees?.[0]);
-    const pill = relDuePill(t);
-    const nudgeable = targetsOf(t).length > 0;
-    return (
-      <div onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, marginBottom: 9, cursor: "pointer" }}>
-        {m ? <Avatar m={m} size={30} /> : <span style={{ width: 30, height: 30, borderRadius: "50%", background: C.track, color: "#8b8672", display: "grid", placeItems: "center", fontSize: 10, fontWeight: 800, flex: "none" }}>{me.name[0]}·{other.name[0]}</span>}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>{t.title}</div>
-          <div style={{ fontSize: 11.5, fontWeight: 600, color: C.mut, marginTop: 1 }}>
-            {t.daily ? "Daily · whoever's home first" : t.reminder?.at ? fmtDue({ dueDate: t.reminder.at.slice(0, 10) }) + " " + t.reminder.at.slice(11, 16) + " reminder" : fmtDue(t) + (deadlineLabel(t) ? " · " + deadlineLabel(t) : "")}
-          </div>
-        </div>
-        {pill && <span style={{ fontSize: 11, fontWeight: 700, color: pill.fg, background: pill.bg, borderRadius: 999, padding: "5px 11px", whiteSpace: "nowrap" }}>{pill.text}</span>}
-        {nudgeable && <NudgeBtn onClick={(e) => { e.stopPropagation(); doNudge(t); }} />}
-      </div>
-    );
-  };
   return (<>
-    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><KlausMark /><H1>Reminders & nudges</H1><Gear onClick={() => nav("settings")} /></div>
+    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><KlausMark /><H1>Info</H1><Gear onClick={() => nav("settings")} /></div>
     <TabStrip tab={tab} goTab={goTab} />
-    <div style={{ padding: "6px 20px 18px" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: C.mut, margin: "2px 2px 12px", lineHeight: 1.5 }}>Tap the bell on a task and {other.name} gets a warm nudge about it — no typing needed.</div>
-      <Kicker>Scheduled</Kicker>
-      {sched.length === 0 && <div style={{ fontSize: 13, color: C.mut, fontWeight: 600, padding: "4px 2px 12px" }}>Nothing scheduled — give a task a day and a reminder comes with it.</div>}
-      {sched.map((t) => <Row key={t.id} t={t} />)}
-      {rest.length > 0 && (<>
-        <Kicker style={{ margin: "18px 2px 8px" }}>Anytime</Kicker>
-        {rest.map((t) => <Row key={t.id} t={t} />)}
-      </>)}
-      {sent && <div style={{ fontSize: 12.5, color: C.terraDark, fontWeight: 700, marginTop: 4, marginBottom: 8, textAlign: "center" }}>{sent}</div>}
-      {recent.length > 0 && (<>
-        <Kicker style={{ margin: "20px 2px 8px" }}>Lately</Kicker>
-        {recent.map((n) => {
-          const f = state.household.members.find((m) => m.id === n.from);
-          return (
-            <div key={n.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
-              <Avatar m={f} size={30} />
-              <div style={{ background: C.terraSoft, borderRadius: 18, borderTopLeftRadius: 6, padding: "11px 14px", fontSize: 13, lineHeight: 1.5, color: C.terraDark }}>"{n.text}"</div>
-            </div>
-          );
-        })}
-      </>)}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", marginTop: 12, boxShadow: shadow }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Quiet hours</div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: C.mut, marginTop: 2 }}>No pushes {q.from} – {q.to} · both of you</div>
+    <div style={{ padding: "6px 20px 16px" }}>
+      {active.length === 0 && archived.length === 0 && (
+        <div style={{ fontSize: 13, color: C.mut, fontWeight: 600, lineHeight: 1.6, padding: "16px 4px", textAlign: "center" }}>
+          Snap anything worth keeping — the weekly meal plan, a wifi code, opening hours, the boiler instructions — and Klaus files it here for both of you.
         </div>
-        <Toggle on={q.on} onClick={() => saveHousehold({ ...state.household, settings: { ...state.household.settings, quietHours: { ...q, on: !q.on } } })} />
+      )}
+      {active.map((t) => <Card key={t.id} t={t} />)}
+      {archived.length > 0 && (
+        <div onClick={() => setShowArch(!showArch)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 2px 10px", cursor: "pointer" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: C.mut }}>Archived · {archived.length}</span>
+          <span style={{ fontSize: 11, color: C.faint, transform: showArch ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▾</span>
+        </div>
+      )}
+      {showArch && archived.map((t) => <Card key={t.id} t={t} />)}
+    </div>
+    <BottomBar onText={addTyped} onPhoto={(p) => nav("addPhoto", { photo: p })} />
+  </>);
+}
+
+function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTask }) {
+  const t = state.tasks.find((x) => x.id === infoId);
+  const [editTitle, setEditTitle] = useState(false);
+  const [newLine, setNewLine] = useState("");
+  const [comment, setComment] = useState("");
+  if (!t) return <div style={{ padding: 24, fontSize: 14, color: C.mut, fontWeight: 600 }}>That's gone. <span onClick={() => nav("info")} style={{ color: C.olive, cursor: "pointer" }}>Back to Info.</span></div>;
+  return (<>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}>
+      <Back onClick={goBack} />
+      {editTitle ? (
+        <input autoFocus defaultValue={t.title} onBlur={(e) => { saveTask({ ...t, title: e.target.value.trim() || t.title }); setEditTitle(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+          style={{ flex: 1, fontSize: 18, fontWeight: 800, letterSpacing: "-.01em", color: C.ink, border: "none", outline: "none", background: "#fff", borderRadius: 12, padding: "6px 10px", fontFamily: FONT, boxShadow: shadow, minWidth: 0 }} />
+      ) : (
+        <span onClick={() => setEditTitle(true)} style={{ flex: 1, cursor: "pointer", minWidth: 0 }}><H1 small>{t.title}</H1></span>
+      )}
+    </div>
+    <div style={{ padding: "0 20px 18px" }}>
+      {t.photoBefore && <Photo src={t.photoBefore} h={200} label={"kept · " + shortDay(t.createdAt || todayStr())} style={{ marginBottom: 13 }} />}
+      {t.archivedAt && <div style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.track, borderRadius: 999, padding: "6px 12px", display: "inline-block", marginBottom: 11 }}>archived</div>}
+      <div style={{ ...card(22), padding: "8px 18px" }}>
+        {(t.listItems || []).map((it, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid " + C.divider : "none" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.olive, flex: "none" }} />
+            <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.ink, lineHeight: 1.4 }}>{it.text}</span>
+            <span onClick={() => saveTask({ ...t, listItems: t.listItems.filter((_, j) => j !== i) })} style={{ fontSize: 13, color: C.faint, cursor: "pointer", padding: "0 4px" }}>×</span>
+          </div>
+        ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: (t.listItems || []).length ? "1px solid " + C.divider : "none" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", border: "1.5px dashed " + C.line, flex: "none", boxSizing: "border-box" }} />
+          <input value={newLine} onChange={(e) => setNewLine(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && newLine.trim()) { saveTask({ ...t, listItems: [...(t.listItems || []), { text: newLine.trim(), done: false }] }); setNewLine(""); } }}
+            placeholder="Add a line…" style={{ flex: 1, border: "none", outline: "none", fontSize: 14, fontWeight: 600, color: C.ink, fontFamily: FONT, background: "transparent" }} />
+        </div>
       </div>
+      {(t.comments || []).map((c, i) => {
+        const by = state.household.members.find((m) => m.id === c.by) || other;
+        return (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 12, flexDirection: c.by === me.id ? "row-reverse" : "row" }}>
+            <Avatar m={by} size={30} />
+            <div style={{ background: C.terraSoft, borderRadius: 18, [c.by === me.id ? "borderTopRightRadius" : "borderTopLeftRadius"]: 6, padding: "11px 14px", fontSize: 13.5, lineHeight: 1.5, color: C.terraDark }}>"{c.text}"</div>
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <input value={comment} onChange={(e) => setComment(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && comment.trim()) { saveTask({ ...t, comments: [...(t.comments || []), { by: me.id, text: comment.trim(), ts: new Date().toISOString() }] }); setComment(""); } }}
+          placeholder="Add a comment…" style={{ flex: 1, background: "#fff", border: "none", outline: "none", borderRadius: 999, padding: "11px 15px", fontSize: 13, fontWeight: 600, color: C.ink, fontFamily: FONT, boxShadow: shadow }} />
+      </div>
+      <PrimaryBtn style={{ marginTop: 16, background: t.archivedAt ? C.olive : "#fff", color: t.archivedAt ? "#fff" : C.ink, boxShadow: t.archivedAt ? shadowBtn : shadow }}
+        onClick={() => { saveTask({ ...t, archivedAt: t.archivedAt ? null : new Date().toISOString() }); nav("info"); }}>
+        {t.archivedAt ? "Bring it back" : "Archive"}
+      </PrimaryBtn>
+      <div onClick={() => { removeTask(t.id); nav("info"); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 14, cursor: "pointer" }}>Remove</div>
     </div>
   </>);
 }
@@ -1287,7 +1350,7 @@ function CalendarView({ state, me, other, nav, goTab, tab }) {
     const today = new Date();
     setSel(nm.getFullYear() === today.getFullYear() && nm.getMonth() === today.getMonth() ? todayStr() : todayStr(nm));
   };
-  const tasksOn = (ds) => state.tasks.filter((t) => t.dueDate === ds || t.deadline === ds || (t.daily && ds >= todayStr()));
+  const tasksOn = (ds) => state.tasks.filter((t) => t.kind !== "info" && (t.dueDate === ds || t.deadline === ds || (t.daily && ds >= todayStr())));
   const caches = state.outlookCache || {};
   const eventsOn = (ds) => state.household.members.flatMap((m) => {
     const c = caches[m.id];
@@ -1460,9 +1523,13 @@ function Sharing({ state, me, nav, goBack, saveHousehold }) {
         <div style={{ flex: 1 }}><div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Photo proof by default</div><div style={{ fontSize: 12, fontWeight: 600, color: C.mut, marginTop: 2 }}>Ask for an "after" photo on chores & projects</div></div>
         <Toggle on={h.settings.photoProofDefault} onClick={() => setSetting("photoProofDefault", !h.settings.photoProofDefault)} />
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", boxShadow: shadow }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", marginBottom: 9, boxShadow: shadow }}>
         <div style={{ flex: 1 }}><div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Daily digest</div><div style={{ fontSize: 12, fontWeight: 600, color: C.mut, marginTop: 2 }}>One summary push at 18:00 instead of many</div></div>
         <Toggle on={h.settings.dailyDigest} onClick={() => setSetting("dailyDigest", !h.settings.dailyDigest)} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", boxShadow: shadow }}>
+        <div style={{ flex: 1 }}><div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Quiet hours</div><div style={{ fontSize: 12, fontWeight: 600, color: C.mut, marginTop: 2 }}>No pushes {h.settings.quietHours.from} – {h.settings.quietHours.to} · both of you</div></div>
+        <Toggle on={h.settings.quietHours.on} onClick={() => setSetting("quietHours", { ...h.settings.quietHours, on: !h.settings.quietHours.on })} />
       </div>
     </div>
   </>);
