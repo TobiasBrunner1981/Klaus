@@ -275,20 +275,29 @@ async function msToken(clientId, email) {
     throw e;
   }
 }
+let graphLog = [];
 async function graph(clientId, email, path, opts = {}) {
-  const token = await msToken(clientId, email);
+  let token;
+  try { token = await msToken(clientId, email); }
+  catch (e) { graphLog.push({ at: new Date().toISOString(), path, status: "token", detail: String(e?.errorCode || e?.message || e) }); graphLog = graphLog.slice(-8); throw e; }
   const r = await fetch("https://graph.microsoft.com/v1.0" + path, {
     ...opts, headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", ...(opts.headers || {}) },
   });
   if (r.status === 204) return null;
   const d = await r.json().catch(() => null);
-  if (!r.ok) throw new Error("graph-" + r.status);
+  if (!r.ok) {
+    const detail = d?.error ? (d.error.code + ": " + (d.error.message || "").slice(0, 160)) : "http " + r.status;
+    graphLog.push({ at: new Date().toISOString(), path, status: r.status, detail });
+    graphLog = graphLog.slice(-8);
+    throw new Error("graph-" + r.status + " " + detail);
+  }
   return d;
 }
 const taskHash = (t) => [t.title, t.dueDate, t.dueTime || "", t.status].join("|");
 function plusHour(hm) { const [h, m] = hm.split(":").map(Number); const t = h * 60 + m + 60; return String(Math.floor(t / 60) % 24).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); }
 
 /* keep my Outlook in step with my Klaus tasks: create / update / tick / remove events */
+let lastWritePass = null;
 async function syncMyOutlook(stateRef, meId, saveTask) {
   const st = stateRef.current; const h = st.household;
   const cid = h.settings?.msClientId; const me = h.members.find((m) => m.id === meId);
@@ -298,6 +307,7 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
   const email = me.outlook.email;
   const access = me.outlook.access || "write";
   const writeMode = access === "write" || access === "readwrite";
+  const stat = { at: new Date().toISOString(), access, qualifying: 0, created: 0, updated: 0, errors: 0, lastError: null };
   for (const t of st.tasks) {
     const cur = stateRef.current.tasks.find((x) => x.id === t.id); if (!cur) continue;
     if (cur.kind === "info") continue;
@@ -305,15 +315,18 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
     const rec = cur.outlook?.[meId];
     try {
       if (writeMode && mine && cur.dueDate && !cur.daily && cur.status !== "done") {
+        stat.qualifying += 1;
         const hash = taskHash(cur);
         const start = cur.dueDate + "T" + (cur.dueTime || "09:00") + ":00";
         const end = cur.dueDate + "T" + plusHour(cur.dueTime || "09:00") + ":00";
         const body = { subject: cur.title, start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ }, body: { contentType: "text", content: "Klaus task — the house, between you." } };
         if (!rec) {
           const ev = await graph(cid, email, "/me/events", { method: "POST", body: JSON.stringify(body) });
+          stat.created += 1;
           saveTask({ ...cur, outlook: { ...(cur.outlook || {}), [meId]: { eventId: ev.id, hash } } });
         } else if (rec.hash !== hash) {
           await graph(cid, email, "/me/events/" + rec.eventId, { method: "PATCH", body: JSON.stringify(body) });
+          stat.updated += 1;
           saveTask({ ...cur, outlook: { ...(cur.outlook || {}), [meId]: { ...rec, hash: hash } } });
         }
       } else if (rec) {
@@ -330,8 +343,10 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
           saveTask({ ...cur, outlook: o });
         }
       }
-    } catch (e) { /* transient — the next pass picks it up */ }
+    } catch (e) { stat.errors += 1; stat.lastError = String(e?.message || e).slice(0, 220); }
   }
+  lastWritePass = stat;
+  try { window.__klausOutlook = { stat, graphLog }; } catch (e) {}
 }
 
 /* publish my upcoming events to the shared store — full events if read & write, anonymous busy-blocks if write only */
@@ -1509,6 +1524,24 @@ function Sharing({ state, me, nav, goBack, saveHousehold }) {
     try { setMsMsg("Off to Microsoft's sign-in…"); await msSignIn(h.settings.msClientId); }
     catch (e) { setMsMsg("Sign-in didn't start — worth re-checking the client ID."); }
   };
+  const [testMsg, setTestMsg] = useState("");
+  const testWrite = async () => {
+    setTestMsg("Trying a test write…");
+    try {
+      const meM = h.members.find((x) => x.id === me.id);
+      const cid = h.settings?.msClientId;
+      getMsal(cid); try { await msalReady; } catch (e) {}
+      if (!msAccount(cid, meM?.outlook?.email)) { setTestMsg("No Microsoft sign-in found on this phone — tap Connect first."); return; }
+      const now = new Date(); const inAnHour = new Date(now.getTime() + 3600000);
+      const iso = (d) => d.toISOString().slice(0, 19);
+      const ev = await graph(cid, meM.outlook.email, "/me/events", { method: "POST", body: JSON.stringify({ subject: "Klaus test — will self-destruct", start: { dateTime: iso(now), timeZone: TZ }, end: { dateTime: iso(inAnHour), timeZone: TZ } }) });
+      await graph(cid, meM.outlook.email, "/me/events/" + ev.id, { method: "DELETE" }).catch(() => {});
+      const wp = lastWritePass;
+      setTestMsg("Writing works — test event created and removed. " + (wp ? `Last sync pass: ${wp.qualifying} task${wp.qualifying === 1 ? "" : "s"} qualified, ${wp.created} created, ${wp.updated} updated, mode "${wp.access}"${wp.lastError ? ", last error: " + wp.lastError : ""}.` : "No sync pass has run yet this session."));
+    } catch (e) {
+      setTestMsg("Write failed — " + String(e?.message || e).slice(0, 260));
+    }
+  };
   return (<>
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>Sharing & access</H1></div>
     <div style={{ padding: "0 20px 18px" }}>
@@ -1545,6 +1578,12 @@ function Sharing({ state, me, nav, goBack, saveHousehold }) {
                 : <span onClick={connectMe} style={{ fontSize: 12, fontWeight: 800, color: "#fff", background: C.olive, borderRadius: 999, padding: "7px 13px", cursor: "pointer", boxShadow: shadowBtn, whiteSpace: "nowrap" }}>Connect</span>
             )}
           </div>
+          {m.id === me.id && m.outlook?.connected && (
+            <div onClick={testWrite} style={{ marginTop: 11, background: C.oliveSoft, color: C.oliveDark, borderRadius: 999, padding: "9px", fontSize: 12.5, fontWeight: 800, textAlign: "center", cursor: "pointer" }}>Test Outlook write</div>
+          )}
+          {m.id === me.id && testMsg && (
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: testMsg.startsWith("Write failed") ? C.terraDark : C.oliveDark, lineHeight: 1.5, marginTop: 8, fontFamily: "'JetBrains Mono',monospace", wordBreak: "break-word" }}>{testMsg}</div>
+          )}
           <SegPill style={{ marginTop: 13 }} value={m.outlook?.access || "write"} onChange={(v) => setMember(m.id, { outlook: { ...m.outlook, access: v } })}
             options={[{ value: "read", label: "Read" }, { value: "write", label: "Write" }, { value: "readwrite", label: "Read & write" }]} />
           <div style={{ fontSize: 11.5, fontWeight: 600, color: C.mut, lineHeight: 1.5, marginTop: 10 }}>
