@@ -365,6 +365,9 @@ const Gear = ({ onClick }) => (
 const Back = ({ onClick }) => (
   <span onClick={onClick} style={{ width: 34, height: 34, borderRadius: "50%", background: "#fff", display: "grid", placeItems: "center", boxShadow: "0 2px 6px rgba(63,56,42,.08)", flex: "none", fontSize: 15, color: "#8b8672", cursor: "pointer" }}>‹</span>
 );
+const KlausMark = () => (
+  <img src="icon-180.png" alt="" style={{ width: 34, height: 34, borderRadius: 11, marginRight: 10, flex: "none", boxShadow: "0 2px 6px rgba(63,56,42,.12)" }} />
+);
 const H1 = ({ children, small }) => <h1 style={{ margin: 0, fontSize: small ? 18 : 22, fontWeight: 800, letterSpacing: small ? "-.01em" : "-.02em", flex: 1, color: C.ink }}>{children}</h1>;
 const Kicker = ({ children, style }) => <div style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: C.mut, margin: "2px 2px 8px", ...style }}>{children}</div>;
 const CheckCircle = ({ state, size = 26, onClick }) => {
@@ -744,7 +747,7 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
     return bits.join(" · ");
   };
   return (<>
-    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><H1>Our day</H1><Gear onClick={() => nav("settings")} /></div>
+    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><KlausMark /><H1>Our day</H1><Gear onClick={() => nav("settings")} /></div>
     <TabStrip tab={tab} goTab={goTab} />
     <div style={{ padding: "6px 20px 0" }}>
       <div style={{ ...card(24, { boxShadow: shadowHero }), padding: 18, display: "flex", alignItems: "center", gap: 16 }}>
@@ -813,7 +816,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
     );
   };
   return (<>
-    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><H1>Tasks</H1><Gear onClick={() => nav("settings")} /></div>
+    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><KlausMark /><H1>Tasks</H1><Gear onClick={() => nav("settings")} /></div>
     <TabStrip tab={tab} goTab={goTab} />
     <div style={{ padding: "6px 20px 16px" }}>
       <SegPill style={{ marginBottom: 14 }} value={mode} onChange={setMode} options={[{ value: "together", label: "Together" }, { value: "person", label: "By person" }]} />
@@ -1232,7 +1235,7 @@ function Reminders({ state, me, other, nav, goTab, tab, saveHousehold, sendNudge
     );
   };
   return (<>
-    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><H1>Reminders & nudges</H1><Gear onClick={() => nav("settings")} /></div>
+    <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}><KlausMark /><H1>Reminders & nudges</H1><Gear onClick={() => nav("settings")} /></div>
     <TabStrip tab={tab} goTab={goTab} />
     <div style={{ padding: "6px 20px 18px" }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: C.mut, margin: "2px 2px 12px", lineHeight: 1.5 }}>Tap the bell on a task and {other.name} gets a warm nudge about it — no typing needed.</div>
@@ -1303,6 +1306,7 @@ function CalendarView({ state, me, other, nav, goTab, tab }) {
   );
   return (<>
     <div style={{ display: "flex", alignItems: "center", padding: "20px 20px 8px" }}>
+      <KlausMark />
       <H1>Calendar</H1>
       <span onClick={() => nav("sharing")} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: connected.length ? C.oliveDark : C.mut, background: connected.length ? C.oliveSoft : C.track, borderRadius: 999, padding: "5px 11px", whiteSpace: "nowrap", cursor: "pointer" }}>
         <i style={{ width: 6, height: 6, borderRadius: "50%", background: connected.length ? C.olive : C.faint, display: "block" }} />
