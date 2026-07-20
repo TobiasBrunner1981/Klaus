@@ -501,7 +501,7 @@ function App() {
   return <div style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: C.bg, fontFamily: FONT, display: "flex", flexDirection: "column" }}>{screen}</div>;
 }
 
-const isTodayTask = (t) => t.daily || t.dueDate === todayStr() || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done");
+const isTodayTask = (t) => t.daily || t.dueDate === todayStr() || (t.dueDate && t.dueDate < todayStr() && t.status !== "done") || (t.status === "done" && t.doneAt && t.doneAt.slice(0, 10) === todayStr()) || (!t.dueDate && t.status !== "done");
 
 /* ---------- onboarding ---------- */
 function Onboard({ members, onPick }) {
@@ -582,7 +582,7 @@ function Home({ state, me, other, nav, goTab, tab, saveTask, completeTask, uncom
   const doneList = todays.filter((t) => t.status === "done");
   const addTyped = (text) => {
     const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", daily: false, dueDate: null, photoProof: false, source: "typed", createdAt: todayStr(), comments: [] };
-    saveTask(t); nav("task", { id: t.id });
+    saveTask(t); nav("task", { id: t.id, edit: true });
   };
   const label = (t) => {
     if (t.status === "done") { const by = state.household.members.find((m) => m.id === t.doneBy); return (by ? by.name : "Someone") + " did it" + (t.doneWithPhoto ? " — with a photo" : ""); }
@@ -639,7 +639,7 @@ function Tasks({ state, me, other, nav, goTab, tab, saveTask, completeTask }) {
   const doneRecent = state.tasks.filter((t) => t.status === "done" && t.doneAt && Date.now() - new Date(t.doneAt) < 3 * 86400000);
   const forPerson = (id) => [...open, ...doneRecent].filter((t) => t.assignees?.includes(id) || t.assignees?.includes("together") || (t.assignees?.length || 0) > 1 && t.assignees.includes(id));
   const st = state.household.streak || { count: 0 };
-  const addTyped = (text) => { const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", photoProof: false, source: "typed", createdAt: todayStr(), comments: [] }; saveTask(t); nav("task", { id: t.id }); };
+  const addTyped = (text) => { const t = { id: uid(), title: text, steps: [], assignees: [me.id], status: "todo", photoProof: false, source: "typed", createdAt: todayStr(), comments: [] }; saveTask(t); nav("task", { id: t.id, edit: true }); };
   const Mini = ({ t }) => {
     const doneT = t.status === "done"; const pill = !doneT && relDuePill(t);
     return (
@@ -689,43 +689,108 @@ function Tasks({ state, me, other, nav, goTab, tab, saveTask, completeTask }) {
 }
 
 /* ---------- 8c Task detail ---------- */
-function TaskDetail({ state, me, other, nav, taskId, saveTask, removeTask, completeTask, uncompleteTask }) {
+function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask, completeTask, uncompleteTask }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const finRef = useRef();
   const [comment, setComment] = useState("");
+  const [editing, setEditing] = useState(!!route.edit);
+  const [editTitle, setEditTitle] = useState(!!route.edit);
+  const [newStep, setNewStep] = useState("");
   if (!t) return <div style={{ padding: 24, fontSize: 14, color: C.mut, fontWeight: 600 }}>That task is gone. <span onClick={() => nav("home")} style={{ color: C.olive, cursor: "pointer" }}>Back home.</span></div>;
   const assignee = t.assignees?.includes("together") || (t.assignees?.length || 0) > 1 ? null : state.household.members.find((m) => m.id === t.assignees?.[0]);
   const toggleStep = (i) => { const steps = t.steps.map((s, j) => (j === i ? { ...s, done: !s.done } : s)); saveTask({ ...t, steps, status: t.status === "todo" && steps.some((s) => s.done) ? "active" : t.status }); };
-  const cycleDue = () => {
-    const opts = [null, todayStr(), todayStr(addDays(new Date(), 1)), nextSaturday()];
-    const idx = opts.indexOf(t.dueDate); const next = opts[(idx + 1) % opts.length];
-    saveTask({ ...t, dueDate: next, reminder: next ? { at: next + "T09:00:00" } : null });
-  };
-  const cycleAssign = () => {
-    const order = [[me.id], [other.id], ["together"]];
-    const cur = JSON.stringify(t.assignees || []); const idx = order.findIndex((o) => JSON.stringify(o) === cur);
-    saveTask({ ...t, assignees: order[(idx + 1) % order.length] });
-  };
+  const remTime = t.reminder?.at ? t.reminder.at.slice(11, 16) : "09:00";
+  const setDue = (dueDate) => saveTask({ ...t, daily: false, dueDate, reminder: dueDate ? { at: dueDate + "T" + remTime + ":00" } : null });
   const pickFinish = async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (!f) return; nav("finish", { id: t.id, photo: await downscale(f) }); };
   const doneT = t.status === "done";
+  const dateChip = (label, val) => (
+    <span onClick={() => setDue(val)} style={{ fontSize: 12, fontWeight: 700, color: t.dueDate === val && !t.daily ? "#fff" : C.ink2, background: t.dueDate === val && !t.daily ? C.ink : C.bg, borderRadius: 999, padding: "8px 13px", cursor: "pointer", whiteSpace: "nowrap" }}>{label}</span>
+  );
+  const editRow = (label, control) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderTop: "1px solid " + C.divider }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.mut, width: 74, flex: "none" }}>{label}</div>
+      <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>{control}</div>
+    </div>
+  );
+  const timeInput = (val, fn) => (
+    <input type="time" value={val || ""} onChange={(e) => fn(e.target.value)}
+      style={{ background: C.bg, border: "none", outline: "none", borderRadius: 10, padding: "7px 10px", fontSize: 12.5, fontWeight: 700, color: C.ink, fontFamily: FONT }} />
+  );
   return (<>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={() => nav("home")} /><H1 small>{t.title}</H1></div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}>
+      <Back onClick={() => nav("home")} />
+      {editTitle ? (
+        <input autoFocus defaultValue={t.title} onBlur={(e) => { saveTask({ ...t, title: e.target.value.trim() || t.title }); setEditTitle(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+          style={{ flex: 1, fontSize: 18, fontWeight: 800, letterSpacing: "-.01em", color: C.ink, border: "none", outline: "none", background: "#fff", borderRadius: 12, padding: "6px 10px", fontFamily: FONT, boxShadow: shadow, minWidth: 0 }} />
+      ) : (
+        <span onClick={() => setEditTitle(true)} style={{ flex: 1, cursor: "pointer", minWidth: 0 }}><H1 small>{t.title}</H1></span>
+      )}
+    </div>
     <div style={{ padding: "0 20px 18px" }}>
       {t.photoBefore && <Photo src={t.photoBefore} h={168} label={"before" + (t.createdAt ? " · " + fmtDue({ dueDate: t.createdAt }).toLowerCase() : "")} style={{ marginBottom: 13 }} />}
       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
         <span style={{ fontSize: 11.5, fontWeight: 700, color: doneT ? C.oliveDark : C.terraDark, background: doneT ? C.oliveSoft : C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>{doneT ? "done" : t.status === "active" ? "in progress" : "to do"}</span>
-        <span onClick={cycleAssign} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: C.ink, background: "#fff", borderRadius: 999, padding: "5px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>
+        <span onClick={() => setEditing(!editing)} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: C.ink, background: "#fff", borderRadius: 999, padding: "5px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>
           {assignee ? <><Avatar m={assignee} size={16} />{assignee.id === me.id ? "Yours" : assignee.name}</> : <>{state.household.members.map((m) => <Avatar key={m.id} m={m} size={16} ring />)}Together</>}
         </span>
-        <span onClick={cycleDue} style={{ fontSize: 11.5, fontWeight: 700, color: "#54695a", background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{fmtDue(t)}</span>
-        <span onClick={() => saveTask({ ...t, photoProof: !t.photoProof })} style={{ fontSize: 11.5, fontWeight: 700, color: t.photoProof ? C.olive : C.mut, background: t.photoProof ? C.oliveSoft : C.bg, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>{t.photoProof ? "photo when done" : "no photo needed"}</span>
+        <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: "#54695a", background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{fmtDue(t)}</span>
+        {t.photoProof && !doneT && <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>photo when done</span>}
+        <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 800, color: C.terra, background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{editing ? "Close" : "Edit"}</span>
       </div>
-      {t.steps?.length > 0 && (
+      {editing && (
+        <div style={{ ...card(22), padding: "6px 18px 12px", marginTop: 13 }}>
+          {editRow("Who", state.household.members.map((m) => (
+            <span key={m.id} onClick={() => saveTask({ ...t, assignees: [m.id] })} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: t.assignees?.[0] === m.id && t.assignees.length === 1 ? "#fff" : C.ink2, background: t.assignees?.[0] === m.id && t.assignees.length === 1 ? C.ink : C.bg, borderRadius: 999, padding: "7px 12px", cursor: "pointer" }}><Avatar m={m} size={16} />{m.name}</span>
+          )).concat(
+            <span key="tog" onClick={() => saveTask({ ...t, assignees: ["together"] })} style={{ fontSize: 12, fontWeight: 700, color: t.assignees?.includes("together") ? "#fff" : C.ink2, background: t.assignees?.includes("together") ? C.ink : C.bg, borderRadius: 999, padding: "8px 13px", cursor: "pointer" }}>Together</span>
+          ))}
+          {editRow("When", <>
+            {dateChip("Anytime", null)}{dateChip("Today", todayStr())}{dateChip("Tomorrow", todayStr(addDays(new Date(), 1)))}{dateChip("Saturday", nextSaturday())}
+            <input type="date" value={t.dueDate || ""} onChange={(e) => setDue(e.target.value || null)}
+              style={{ background: C.bg, border: "none", outline: "none", borderRadius: 10, padding: "7px 10px", fontSize: 12.5, fontWeight: 700, color: C.ink, fontFamily: FONT }} />
+          </>)}
+          {t.dueDate && !t.daily && editRow("At", <>
+            {timeInput(t.dueTime, (v) => saveTask({ ...t, dueTime: v || null }))}
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>{t.dueTime ? "— it goes in the calendar at " + t.dueTime : "no time — calendar entry at 9:00"}</span>
+          </>)}
+          {t.dueDate && !t.daily && editRow("Remind", <>
+            {timeInput(remTime, (v) => saveTask({ ...t, reminder: { at: t.dueDate + "T" + v + ":00" } }))}
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>on the day</span>
+          </>)}
+          {editRow("Daily", <>
+            <Toggle on={!!t.daily} onClick={() => saveTask({ ...t, daily: !t.daily, dueDate: null, dueTime: null, reminder: null })} />
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>repeats every day, builds a streak</span>
+          </>)}
+          {editRow("Photo", <>
+            <Toggle on={!!t.photoProof} onClick={() => saveTask({ ...t, photoProof: !t.photoProof })} />
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>finish with an "after" photo</span>
+          </>)}
+        </div>
+      )}
+      {!doneT && (
+        <div style={{ ...card(22), padding: "8px 18px", marginTop: 13 }}>
+          {(t.steps || []).map((s, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid #f0f3ee" : "none" }}>
+              <CheckCircle size={24} state={s.done ? "done" : i === t.steps.findIndex((x) => !x.done) ? "active" : "todo"} onClick={() => toggleStep(i)} />
+              <span onClick={() => toggleStep(i)} style={{ flex: 1, fontSize: 14, fontWeight: s.done ? 600 : 700, color: s.done ? C.faint : i === t.steps.findIndex((x) => !x.done) ? C.ink : C.mut, textDecoration: s.done ? "line-through" : "none", cursor: "pointer" }}>{s.text}</span>
+              <span onClick={() => saveTask({ ...t, steps: t.steps.filter((_, j) => j !== i) })} style={{ fontSize: 13, color: C.faint, cursor: "pointer", padding: "0 4px" }}>×</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: (t.steps || []).length ? "1px solid #f0f3ee" : "none" }}>
+            <span style={{ width: 24, height: 24, borderRadius: "50%", border: "2.5px dashed " + C.line, flex: "none", boxSizing: "border-box", display: "grid", placeItems: "center", color: C.faint, fontSize: 13 }}>+</span>
+            <input value={newStep} onChange={(e) => setNewStep(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && newStep.trim()) { saveTask({ ...t, steps: [...(t.steps || []), { text: newStep.trim(), done: false }] }); setNewStep(""); } }}
+              placeholder="Add a step…" style={{ flex: 1, border: "none", outline: "none", fontSize: 14, fontWeight: 600, color: C.ink, fontFamily: FONT, background: "transparent" }} />
+          </div>
+        </div>
+      )}
+      {doneT && t.steps?.length > 0 && (
         <div style={{ ...card(22), padding: "8px 18px", marginTop: 13 }}>
           {t.steps.map((s, i) => (
-            <div key={i} onClick={() => toggleStep(i)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid #f0f3ee" : "none", cursor: "pointer" }}>
-              <CheckCircle size={24} state={s.done ? "done" : i === t.steps.findIndex((x) => !x.done) ? "active" : "todo"} />
-              <span style={{ fontSize: 14, fontWeight: s.done ? 600 : 700, color: s.done ? C.faint : i === t.steps.findIndex((x) => !x.done) ? C.ink : C.mut, textDecoration: s.done ? "line-through" : "none" }}>{s.text}</span>
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid #f0f3ee" : "none" }}>
+              <CheckCircle size={24} state="done" />
+              <span style={{ fontSize: 14, fontWeight: 600, color: C.faint, textDecoration: "line-through" }}>{s.text}</span>
             </div>
           ))}
         </div>
@@ -738,7 +803,7 @@ function TaskDetail({ state, me, other, nav, taskId, saveTask, removeTask, compl
           ))}
         </div>
       )}
-      {t.reminder?.at && !doneT && (
+      {t.reminder?.at && !doneT && !editing && (
         <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 20, padding: "14px 16px", marginTop: 11, boxShadow: shadow }}>
           <span style={{ width: 34, height: 34, borderRadius: "50%", background: C.oliveSoft, display: "grid", placeItems: "center", flex: "none" }}>
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke={C.olive} strokeWidth="1.8" strokeLinecap="round"><path d="M12 8v5l3 2M12 3a9 9 0 109 9" /></svg>
@@ -933,7 +998,7 @@ function ScanNote({ state, me, other, nav, photo, saveTask }) {
 }
 
 /* ---------- 8f Finish with photo ---------- */
-function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeTask }) {
+function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeTask, sendNudge }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const [ver, setVer] = useState(null);
   const doneRef = useRef(false);
@@ -985,7 +1050,7 @@ function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeT
           <div><div style={{ fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color: C.olive, fontWeight: 800 }}>Done and dusted</div>
             <div style={{ fontSize: 13, lineHeight: 1.5, color: C.oliveDark, marginTop: 4, fontWeight: 600 }}>{ver.note}</div></div>
         </div>
-        <PrimaryBtn style={{ marginTop: 15 }} onClick={() => { const cur = state.tasks.find((x) => x.id === t.id); saveTask({ ...cur, sentTo: other.id }); nav("home"); }}>Send it to {other.name}</PrimaryBtn>
+        <PrimaryBtn style={{ marginTop: 15 }} onClick={() => { sendNudge(other.id, "Done \u2713 " + t.title + " \u2014 with a photo to prove it"); nav("home"); }}>Send it to {other.name}</PrimaryBtn>
         <div onClick={() => { const cur = state.tasks.find((x) => x.id === t.id); saveTask({ ...cur, status: "todo", doneAt: null, doneBy: null, doneWithPhoto: false, photoAfter: null }); nav("task", { id: t.id }); }} style={{ textAlign: "center", fontSize: 13, fontWeight: 700, color: C.mut, marginTop: 12, cursor: "pointer" }}>Undo</div>
       </>)}
     </div>
