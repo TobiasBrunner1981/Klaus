@@ -319,7 +319,7 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
         const hash = taskHash(cur);
         const start = cur.dueDate + "T" + (cur.dueTime || "09:00") + ":00";
         const end = cur.dueDate + "T" + plusHour(cur.dueTime || "09:00") + ":00";
-        const body = { subject: cur.title, start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ }, body: { contentType: "text", content: "Klaus task — the house, between you." } };
+        const body = { subject: cur.title, start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ }, categories: ["Klaus"], body: { contentType: "text", content: "Klaus task — the house, between you." } };
         if (!rec) {
           const ev = await graph(cid, email, "/me/events", { method: "POST", body: JSON.stringify(body) });
           stat.created += 1;
@@ -357,12 +357,12 @@ async function pushMyEventsCache(stateRef, meId) {
   getMsal(cid); try { await msalReady; } catch (e) {}
   if (!msAccount(cid, me.outlook.email)) return null;
   const startD = addDays(new Date(), -1), endD = addDays(new Date(), 8);
-  const q = `/me/calendarView?startDateTime=${todayStr(startD)}T00:00:00&endDateTime=${todayStr(endD)}T23:59:59&$top=60&$select=id,subject,start,end`;
+  const q = `/me/calendarView?startDateTime=${todayStr(startD)}T00:00:00&endDateTime=${todayStr(endD)}T23:59:59&$top=60&$select=id,subject,start,end,categories`;
   const d = await graph(cid, me.outlook.email, q, { headers: { Prefer: `outlook.timezone="${TZ}"` } });
   const klausIds = new Set(st.tasks.map((t) => t.outlook?.[meId]?.eventId).filter(Boolean));
   const access = me.outlook.access || "write";
   const publish = access === "readwrite" || access === "read";
-  const events = (d?.value || []).filter((e) => !klausIds.has(e.id)).map((e) => ({
+  const events = (d?.value || []).filter((e) => !klausIds.has(e.id) && !(e.categories || []).includes("Klaus")).map((e) => ({
     title: publish ? (e.subject || "(no title)") : "Busy",
     start: (e.start?.dateTime || "").slice(0, 16), end: (e.end?.dateTime || "").slice(0, 16),
   })).filter((e) => e.start);
@@ -487,7 +487,14 @@ function App() {
     scheduleOutlookSync();
   };
   const removeTask = (id) => {
-    persist({ ...stateRef.current, tasks: stateRef.current.tasks.filter((t) => t.id !== id) });
+    const t = stateRef.current.tasks.find((x) => x.id === id);
+    const meM = stateRef.current.household.members.find((m) => m.id === me.id);
+    const cid = stateRef.current.household.settings?.msClientId;
+    const rec = t?.outlook?.[me.id];
+    if (rec && cid && meM?.outlook?.connected) {
+      (async () => { try { getMsal(cid); await msalReady; if (msAccount(cid, meM.outlook.email)) await graph(cid, meM.outlook.email, "/me/events/" + rec.eventId, { method: "DELETE" }); } catch (e) {} })();
+    }
+    persist({ ...stateRef.current, tasks: stateRef.current.tasks.filter((x) => x.id !== id) });
     sbDeleteTask(id).catch(() => {});
   };
   const saveHousehold = (h) => { persist({ ...stateRef.current, household: h }); sbPushHousehold(h).catch(() => {}); };
@@ -950,6 +957,16 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
         <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: "#54695a", background: "#fff", borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(63,56,42,.07)", whiteSpace: "nowrap", cursor: "pointer" }}>{fmtDue(t)}</span>
         {dlText && <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: C.terraDark, background: C.terraSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>{dlText}</span>}
         {t.photoProof && !doneT && <span onClick={() => setEditing(!editing)} style={{ fontSize: 11.5, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>photo when done</span>}
+        {(() => {
+          const meM = state.household.members.find((m) => m.id === me.id);
+          const acc = meM?.outlook?.access || "write";
+          if (!meM?.outlook?.connected || doneT || t.daily || (acc !== "write" && acc !== "readwrite")) return null;
+          const mineT = t.assignees?.includes(me.id) || t.assignees?.includes("together");
+          if (!mineT) return null;
+          if (t.outlook?.[me.id]) return <span style={{ fontSize: 11.5, fontWeight: 700, color: C.oliveDark, background: C.oliveSoft, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>in your Outlook ✓</span>;
+          if (t.dueDate) return <span style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.bg, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap" }}>syncing to Outlook…</span>;
+          return <span onClick={() => setEditing(true)} style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.bg, borderRadius: 999, padding: "6px 12px", whiteSpace: "nowrap", cursor: "pointer" }}>needs an "On" day for Outlook</span>;
+        })()}
       </div>
       {editing && (
         <div style={{ ...card(22), padding: "6px 18px 12px", marginTop: 13 }}>
