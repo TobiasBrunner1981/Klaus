@@ -20,7 +20,7 @@ const FONT = "'Plus Jakarta Sans',sans-serif";
 
 /* ---------- utilities ---------- */
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Math.random().toString(36).slice(2) + Date.now());
-const todayStr = (d = new Date()) => d.toISOString().slice(0, 10);
+const todayStr = (d = new Date()) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const DAYNAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -388,9 +388,9 @@ const KlausMark = () => (
 );
 const H1 = ({ children, small }) => <h1 style={{ margin: 0, fontSize: small ? 18 : 22, fontWeight: 800, letterSpacing: small ? "-.01em" : "-.02em", flex: 1, color: C.ink }}>{children}</h1>;
 const Kicker = ({ children, style }) => <div style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: C.mut, margin: "2px 2px 8px", ...style }}>{children}</div>;
-const CheckCircle = ({ state, size = 26, onClick }) => {
+const CheckCircle = ({ state, size = 26, onClick, pop }) => {
   const base = { width: size, height: size, borderRadius: "50%", flex: "none", boxSizing: "border-box", display: "grid", placeItems: "center", cursor: onClick ? "pointer" : "default" };
-  if (state === "done") return <span onClick={onClick} style={{ ...base, background: C.olive, color: "#fff", fontSize: size * 0.5 }}>✓</span>;
+  if (state === "done") return <span onClick={onClick} className={pop ? "kpop" : ""} style={{ ...base, background: C.olive, color: "#fff", fontSize: size * 0.5 }}>✓</span>;
   if (state === "active") return <span onClick={onClick} style={{ ...base, border: "2.5px solid " + C.terra }} />;
   return <span onClick={onClick} style={{ ...base, border: "2.5px solid " + C.line }} />;
 };
@@ -767,8 +767,28 @@ function NudgeCard({ nudge, from, onDismiss, onOpen }) {
     </div>
   );
 }
+function SwipeableRow({ onSwipe, onTap, children, style }) {
+  const [dx, setDx] = useState(0);
+  const start = useRef(null); const moved = useRef(false);
+  return (
+    <div
+      onTouchStart={(e) => { e.stopPropagation(); start.current = e.touches[0].clientX; moved.current = false; }}
+      onTouchMove={(e) => { if (start.current != null) { const d = e.touches[0].clientX - start.current; if (Math.abs(d) > 8) moved.current = true; setDx(d); } }}
+      onTouchEnd={(e) => { e.stopPropagation(); const d = dx; start.current = null; if (Math.abs(d) > 80) { setDx(d > 0 ? 460 : -460); setTimeout(onSwipe, 190); } else setDx(0); }}
+      onClick={() => { if (!moved.current) onTap(); }}
+      style={{ transform: `translateX(${dx}px)`, opacity: Math.max(0, 1 - Math.abs(dx) / 340), transition: start.current == null ? "transform .2s, opacity .2s" : "none", ...style }}>
+      {children}
+    </div>
+  );
+}
 function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncompleteTask }) {
   const [showDone, setShowDone] = useState(false);
+  const [finishing, setFinishing] = useState({});
+  const finishWithFlair = (t) => {
+    if (finishing[t.id]) return;
+    setFinishing((f) => ({ ...f, [t.id]: true }));
+    setTimeout(() => { completeTask(t); setFinishing((f) => { const n = { ...f }; delete n[t.id]; return n; }); }, 750);
+  };
   const [readIds, setReadIds] = useState(() => { try { return JSON.parse(localStorage.getItem("klaus.readNudges")) || []; } catch (e) { return []; } });
   const markRead = (id) => { const r = [...readIds, id].slice(-100); setReadIds(r); localStorage.setItem("klaus.readNudges", JSON.stringify(r)); };
   const todays = state.tasks.filter(isTodayTask);
@@ -803,14 +823,21 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
       </div>
       {nudge && <NudgeCard nudge={nudge} from={nudgeFrom} onDismiss={() => markRead(nudge.id)} onOpen={() => (nudge.taskId && state.tasks.some((t) => t.id === nudge.taskId)) ? nav("task", { id: nudge.taskId }) : markRead(nudge.id)} />}
       <div style={{ fontSize: 13, fontWeight: 700, color: C.mut, margin: "20px 2px 8px" }}>{new Date().getHours() < 12 ? "This morning" : new Date().getHours() < 18 ? "This afternoon" : "This evening"}</div>
-      {open.map((t) => (
-        <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, cursor: "pointer" }}>
-          <CheckCircle state={t.status === "active" ? "active" : "todo"} onClick={(e) => { e.stopPropagation(); t.photoProof ? nav("task", { id: t.id }) : completeTask(t); }} />
-          <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.mut, marginTop: 1 }}>{label(t)}</div></div>
-          {t.daily && (t.streak || 0) > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap" }}>{t.streak} days</span>}
-          {t.photoBefore && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
-        </div>
-      ))}
+      {open.map((t) => {
+        const fin = !!finishing[t.id];
+        return (
+          <SwipeableRow key={t.id} onSwipe={() => completeTask(t)} onTap={() => nav("task", { id: t.id })}
+            style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, cursor: "pointer" }}>
+            <CheckCircle state={fin ? "done" : t.status === "active" ? "active" : "todo"} pop={fin} onClick={(e) => { e.stopPropagation(); if (fin) return; t.photoProof ? nav("task", { id: t.id }) : finishWithFlair(t); }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: fin ? C.strike : C.ink, transition: "color .3s" }}><span className={fin ? "kstrike" : ""}>{t.title}</span></div>
+              <div style={{ fontSize: 11.5, color: fin ? C.faint : C.mut, marginTop: 1, transition: "color .3s" }}>{fin ? "Lovely — done." : label(t)}</div>
+            </div>
+            {t.daily && (t.streak || 0) > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap" }}>{t.streak} days</span>}
+            {t.photoBefore && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
+          </SwipeableRow>
+        );
+      })}
       {doneList.length > 0 && (
         <div onClick={() => setShowDone(!showDone)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px 10px", cursor: "pointer" }}>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: C.mut }}>Done today · {doneList.length}</span>
@@ -1013,7 +1040,7 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
         <div style={{ ...card(22), padding: "8px 18px", marginTop: 13 }}>
           {(t.steps || []).map((s, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid #f0f3ee" : "none" }}>
-              <CheckCircle size={24} state={s.done ? "done" : i === t.steps.findIndex((x) => !x.done) ? "active" : "todo"} onClick={() => toggleStep(i)} />
+              <CheckCircle size={24} state={s.done ? "done" : i === t.steps.findIndex((x) => !x.done) ? "active" : "todo"} pop={s.done} onClick={() => toggleStep(i)} />
               <span onClick={() => toggleStep(i)} style={{ flex: 1, fontSize: 14, fontWeight: s.done ? 600 : 700, color: s.done ? C.faint : i === t.steps.findIndex((x) => !x.done) ? C.ink : C.mut, textDecoration: s.done ? "line-through" : "none", cursor: "pointer" }}>{s.text}</span>
               <span onClick={() => saveTask({ ...t, steps: t.steps.filter((_, j) => j !== i) })} style={{ fontSize: 13, color: C.faint, cursor: "pointer", padding: "0 4px" }}>×</span>
             </div>
@@ -1743,6 +1770,6 @@ function Settings({ state, me, nav, goBack, syncStatus, setSyncStatus }) {
 
 /* ---------- mount ---------- */
 const style = document.createElement("style");
-style.textContent = `@keyframes tspin{to{transform:rotate(360deg)}} .tspin{animation:tspin .9s linear infinite} body{margin:0;background:${C.bg}} input::placeholder{color:${C.mut};font-weight:600}`;
+style.textContent = `@keyframes tspin{to{transform:rotate(360deg)}} .tspin{animation:tspin .9s linear infinite} @keyframes kpop{0%{transform:scale(.5)}55%{transform:scale(1.22)}100%{transform:scale(1)}} .kpop{animation:kpop .38s cubic-bezier(.34,1.56,.64,1)} @keyframes kstrike{from{width:0}to{width:100%}} .kstrike{position:relative;display:inline-block} .kstrike::after{content:"";position:absolute;left:0;top:55%;height:2px;background:${C.strike};width:100%;animation:kstrike .45s ease forwards} body{margin:0;background:${C.bg}} input::placeholder{color:${C.mut};font-weight:600}`;
 document.head.appendChild(style);
 createRoot(document.getElementById("root")).render(<App />);
