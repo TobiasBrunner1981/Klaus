@@ -405,6 +405,18 @@ const CameraSvg = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8a2 2 0 012-2h2l1.5-2h7L18 6h1a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" /><circle cx="12" cy="13" r="3.4" /></svg>
 );
 
+function PickPhoto({ onPick }) {
+  const cam = useRef(); const gal = useRef();
+  const h = async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onPick(await downscale(f)); };
+  const btn = { fontSize: 12, fontWeight: 700, color: C.ink2, background: C.bg, borderRadius: 999, padding: "8px 13px", cursor: "pointer", whiteSpace: "nowrap" };
+  return (<>
+    <span onClick={() => gal.current.click()} style={btn}>From photos</span>
+    <span onClick={() => cam.current.click()} style={btn}>Camera</span>
+    <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={h} />
+    <input ref={gal} type="file" accept="image/*" hidden onChange={h} />
+  </>);
+}
+
 /* animated AI checklist: rows appear one by one, last runs a spinner until done */
 function AiChecklist({ rows, running }) {
   return (
@@ -681,6 +693,7 @@ function BottomBar({ onText, onPhoto }) {
     setBusy(true);
     try { await onText(txt.trim()); setTxt(""); } finally { setBusy(false); }
   };
+  const galRef = useRef();
   const pick = async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (!f) return; onPhoto(await downscale(f)); };
   return (
     <div style={{ position: "sticky", bottom: 0, marginTop: "auto" }}>
@@ -692,9 +705,13 @@ function BottomBar({ onText, onPhoto }) {
         {(txt.trim() || busy) && (busy
           ? <span className="tspin" style={{ width: 40, height: 40, borderRadius: "50%", border: "3px solid " + C.olive, borderTopColor: "transparent", flex: "none", boxSizing: "border-box" }} />
           : <span onClick={submit} style={{ width: 40, height: 40, borderRadius: "50%", background: C.oliveSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer", color: C.olive, fontWeight: 800, fontSize: 17 }}>✓</span>)}
+        <span onClick={() => galRef.current.click()} style={{ width: 42, height: 42, borderRadius: "50%", background: C.oliveSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer" }}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke={C.olive} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="3" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 15.5l-4.5-4.5L7 20.5" /></svg>
+        </span>
         <span onClick={() => photoRef.current.click()} style={{ width: 46, height: 46, borderRadius: "50%", background: C.olive, display: "grid", placeItems: "center", flex: "none", boxShadow: shadowBtn, cursor: "pointer" }}><CameraSvg /></span>
       </div>
       <input ref={photoRef} type="file" accept="image/*" capture="environment" hidden onChange={pick} />
+      <input ref={galRef} type="file" accept="image/*" hidden onChange={pick} />
     </div>
   );
 }
@@ -856,7 +873,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
 }
 
 /* ---------- 8c Task detail ---------- */
-function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, removeTask, completeTask, uncompleteTask, sendNudge }) {
+function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, removeTask, completeTask, uncompleteTask, sendNudge, patchTask }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const finRef = useRef();
   const [comment, setComment] = useState("");
@@ -953,6 +970,10 @@ function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, re
           {editRow("Photo", <>
             <Toggle on={!!t.photoProof} onClick={() => saveTask({ ...t, photoProof: !t.photoProof })} />
             <span style={{ fontSize: 11.5, fontWeight: 600, color: C.mut }}>finish with an "after" photo</span>
+          </>)}
+          {editRow("Picture", <>
+            <PickPhoto onPick={(d) => { saveTask({ ...t, photoBefore: d }); sbUploadPhoto(d, "cap-" + t.id).then((u) => { if (u !== d) patchTask(t.id, { photoBefore: u }); }); }} />
+            {t.photoBefore && <span onClick={() => saveTask({ ...t, photoBefore: null })} style={{ fontSize: 12, fontWeight: 700, color: C.mut, cursor: "pointer", padding: "0 4px" }}>Remove</span>}
           </>)}
         </div>
       )}
@@ -1279,7 +1300,7 @@ function InfoList({ state, me, nav, goTab, tab, addTyped }) {
   </>);
 }
 
-function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTask }) {
+function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTask, patchTask }) {
   const t = state.tasks.find((x) => x.id === infoId);
   const [editTitle, setEditTitle] = useState(false);
   const [newLine, setNewLine] = useState("");
@@ -1307,6 +1328,10 @@ function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTas
         })}
         <span style={{ fontSize: 11, fontWeight: 600, color: C.mut }}>{(t.assignees || []).length === 1 ? "only you can see this — switch to reveal it" : "visible to you both"}</span>
         {t.archivedAt && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.track, borderRadius: 999, padding: "6px 12px" }}>archived</span>}
+      </div>
+      <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 11 }}>
+        <PickPhoto onPick={(d) => { saveTask({ ...t, photoBefore: d }); sbUploadPhoto(d, "cap-" + t.id).then((u) => { if (u !== d) patchTask(t.id, { photoBefore: u }); }); }} />
+        {t.photoBefore && <span onClick={() => saveTask({ ...t, photoBefore: null })} style={{ fontSize: 12, fontWeight: 700, color: C.mut, cursor: "pointer", padding: "0 4px" }}>Remove picture</span>}
       </div>
       <div style={{ ...card(22), padding: "8px 18px" }}>
         {(t.listItems || []).map((it, i) => (
