@@ -257,10 +257,12 @@ async function msHandleRedirect(clientId) {
   try { return await m.handleRedirectPromise(); } catch (e) { return null; }
 }
 function msAccount(clientId, email) {
-  const m = getMsal(clientId); if (!m) return null;
-  const accs = m.getAllAccounts();
-  if (!accs.length) return null;
-  return (email && accs.find((a) => a.username.toLowerCase() === email.toLowerCase())) || accs[0];
+  try {
+    const m = getMsal(clientId); if (!m) return null;
+    const accs = m.getAllAccounts();
+    if (!accs.length) return null;
+    return (email && accs.find((a) => a.username.toLowerCase() === email.toLowerCase())) || accs[0];
+  } catch (e) { return null; }
 }
 async function msToken(clientId, email) {
   const m = getMsal(clientId); await msalReady;
@@ -288,14 +290,18 @@ function plusHour(hm) { const [h, m] = hm.split(":").map(Number); const t = h * 
 async function syncMyOutlook(stateRef, meId, saveTask) {
   const st = stateRef.current; const h = st.household;
   const cid = h.settings?.msClientId; const me = h.members.find((m) => m.id === meId);
-  if (!cid || !me?.outlook?.connected || !msAccount(cid, me.outlook.email)) return;
+  if (!cid || !me?.outlook?.connected) return;
+  getMsal(cid); try { await msalReady; } catch (e) {}
+  if (!msAccount(cid, me.outlook.email)) return;
   const email = me.outlook.email;
+  const access = me.outlook.access || "write";
+  const writeMode = access === "write" || access === "readwrite";
   for (const t of st.tasks) {
     const cur = stateRef.current.tasks.find((x) => x.id === t.id); if (!cur) continue;
     const mine = cur.assignees?.includes(meId) || cur.assignees?.includes("together");
     const rec = cur.outlook?.[meId];
     try {
-      if (mine && cur.dueDate && !cur.daily && cur.status !== "done") {
+      if (writeMode && mine && cur.dueDate && !cur.daily && cur.status !== "done") {
         const hash = taskHash(cur);
         const start = cur.dueDate + "T" + (cur.dueTime || "09:00") + ":00";
         const end = cur.dueDate + "T" + plusHour(cur.dueTime || "09:00") + ":00";
@@ -308,7 +314,11 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
           saveTask({ ...cur, outlook: { ...(cur.outlook || {}), [meId]: { ...rec, hash: hash } } });
         }
       } else if (rec) {
-        if (cur.status === "done" && !rec.doneMarked) {
+        if (!writeMode) {
+          await graph(cid, email, "/me/events/" + rec.eventId, { method: "DELETE" }).catch(() => {});
+          const o = { ...(cur.outlook || {}) }; delete o[meId];
+          saveTask({ ...cur, outlook: o });
+        } else if (cur.status === "done" && !rec.doneMarked) {
           await graph(cid, email, "/me/events/" + rec.eventId, { method: "PATCH", body: JSON.stringify({ subject: "✓ " + cur.title }) }).catch(() => {});
           saveTask({ ...cur, outlook: { ...(cur.outlook || {}), [meId]: { ...rec, doneMarked: true } } });
         } else if (cur.status !== "done") {
@@ -325,17 +335,20 @@ async function syncMyOutlook(stateRef, meId, saveTask) {
 async function pushMyEventsCache(stateRef, meId) {
   const st = stateRef.current; const h = st.household;
   const cid = h.settings?.msClientId; const me = h.members.find((m) => m.id === meId);
-  if (!cid || !me?.outlook?.connected || !msAccount(cid, me.outlook.email)) return null;
+  if (!cid || !me?.outlook?.connected) return null;
+  getMsal(cid); try { await msalReady; } catch (e) {}
+  if (!msAccount(cid, me.outlook.email)) return null;
   const startD = addDays(new Date(), -1), endD = addDays(new Date(), 8);
   const q = `/me/calendarView?startDateTime=${todayStr(startD)}T00:00:00&endDateTime=${todayStr(endD)}T23:59:59&$top=60&$select=id,subject,start,end`;
   const d = await graph(cid, me.outlook.email, q, { headers: { Prefer: `outlook.timezone="${TZ}"` } });
   const klausIds = new Set(st.tasks.map((t) => t.outlook?.[meId]?.eventId).filter(Boolean));
-  const readwrite = (me.outlook.access || "write") === "readwrite";
+  const access = me.outlook.access || "write";
+  const publish = access === "readwrite" || access === "read";
   const events = (d?.value || []).filter((e) => !klausIds.has(e.id)).map((e) => ({
-    title: readwrite ? (e.subject || "(no title)") : "Busy",
+    title: publish ? (e.subject || "(no title)") : "Busy",
     start: (e.start?.dateTime || "").slice(0, 16), end: (e.end?.dateTime || "").slice(0, 16),
   })).filter((e) => e.start);
-  const data = { updatedAt: new Date().toISOString(), mode: me.outlook.access || "write", events };
+  const data = { updatedAt: new Date().toISOString(), mode: access, events };
   await sbPushCache(meId, data).catch(() => {});
   return data;
 }
@@ -426,12 +439,18 @@ function App() {
   const other = state.household.members.find((m) => m.id !== me.id) || state.household.members[1];
 
   /* --- mutations (push per-entity when Supabase is connected) --- */
+  const outlookKick = useRef(null);
+  const scheduleOutlookSync = () => {
+    if (outlookKick.current) clearTimeout(outlookKick.current);
+    outlookKick.current = setTimeout(() => { syncMyOutlook(stateRef, me.id, saveTask).catch(() => {}); }, 1500);
+  };
   const saveTask = (task) => {
     const tasks = stateRef.current.tasks.some((t) => t.id === task.id)
       ? stateRef.current.tasks.map((t) => (t.id === task.id ? task : t))
       : [...stateRef.current.tasks, task];
     persist({ ...stateRef.current, tasks });
     sbPushTask(task).catch(() => {});
+    scheduleOutlookSync();
   };
   const removeTask = (id) => {
     persist({ ...stateRef.current, tasks: stateRef.current.tasks.filter((t) => t.id !== id) });
@@ -580,8 +599,8 @@ function App() {
 
   const stackRef = useRef([]);
   const TABS = ["home", "tasks", "calendar", "nudges"];
-  const nav = (name, params = {}) => { stackRef.current.push(route); if (stackRef.current.length > 20) stackRef.current.shift(); setRoute({ name, ...params }); };
-  const goBack = () => { const prev = stackRef.current.pop(); setRoute(prev || { name: tab }); };
+  const nav = (name, params = {}) => { stackRef.current.push(route); if (stackRef.current.length > 20) stackRef.current.shift(); if (TABS.includes(name)) setTab(name); setRoute({ name, ...params }); };
+  const goBack = () => { const prev = stackRef.current.pop() || { name: tab }; if (TABS.includes(prev.name)) setTab(prev.name); setRoute(prev); };
   const goTab = (t) => { stackRef.current = []; setTab(t); setRoute({ name: t }); };
   const touchRef = useRef(null);
   const onTouchStart = (e) => { const t = e.touches[0]; touchRef.current = { x: t.clientX, y: t.clientY, el: e.target }; };
@@ -595,7 +614,7 @@ function App() {
       if (ni >= 0 && ni < TABS.length) goTab(TABS[ni]);
     } else if (dx > 0) goBack();
   };
-  const screenProps = { state, me, other, saveTask, removeTask, saveHousehold, sendNudge, completeTask, uncompleteTask, addTyped, nav, goTab, tab, route, syncStatus, setSyncStatus };
+  const screenProps = { state, me, other, saveTask, removeTask, saveHousehold, sendNudge, completeTask, uncompleteTask, addTyped, nav, goBack, goTab, tab, route, syncStatus, setSyncStatus };
 
   let screen;
   switch (route.name) {
@@ -829,7 +848,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
 }
 
 /* ---------- 8c Task detail ---------- */
-function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask, completeTask, uncompleteTask }) {
+function TaskDetail({ state, me, other, nav, goBack, route, taskId, saveTask, removeTask, completeTask, uncompleteTask }) {
   const t = state.tasks.find((x) => x.id === taskId);
   const finRef = useRef();
   const [comment, setComment] = useState("");
@@ -862,7 +881,7 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
   );
   return (<>
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}>
-      <Back onClick={() => nav("home")} />
+      <Back onClick={goBack} />
       {editTitle ? (
         <input autoFocus defaultValue={t.title} onBlur={(e) => { saveTask({ ...t, title: e.target.value.trim() || t.title }); setEditTitle(false); }}
           onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
@@ -1003,7 +1022,7 @@ function TaskDetail({ state, me, other, nav, route, taskId, saveTask, removeTask
 function nextSaturday() { const d = new Date(); d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7 || 7)); return todayStr(d); }
 
 /* ---------- 8d Smart capture: one camera, Klaus works out the rest ---------- */
-function AddFromPhoto({ state, me, other, nav, photo, saveTask }) {
+function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask }) {
   const [draft, setDraft] = useState(null);
   const [failed, setFailed] = useState(false);
   const [title, setTitle] = useState("");
@@ -1062,7 +1081,7 @@ function AddFromPhoto({ state, me, other, nav, photo, saveTask }) {
     <span onClick={fn} style={{ background: on ? C.ink : "#fff", borderRadius: 999, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, color: on ? "#fff" : C.ink2, boxShadow: on ? "none" : "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}><span style={{ color: on ? C.terraSoft : C.terra }}>↳ </span>{label}</span>
   );
   return (<>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={() => nav("home")} /><H1 small>{isNote ? "From your note" : "New task"}</H1></div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>{isNote ? "From your note" : "New task"}</H1></div>
     <div style={{ padding: "0 20px 18px" }}>
       <Photo src={photo} h={150} label="your photo · just now" />
       <div style={{ marginTop: 13 }}><AiChecklist rows={rows} running={!draft} /></div>
@@ -1169,8 +1188,11 @@ function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeT
 /* ---------- 8g Reminders & nudges ---------- */
 function NudgeBtn({ onClick }) {
   return (
-    <span onClick={onClick} style={{ width: 34, height: 34, borderRadius: "50%", background: C.terraSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer" }}>
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke={C.terra} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 01-3.4 0" /></svg>
+    <span onClick={onClick} style={{ width: 36, height: 36, borderRadius: "50%", background: C.terraSoft, display: "grid", placeItems: "center", flex: "none", cursor: "pointer" }}>
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke={C.terra} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 11.3a8.3 8.3 0 01-8.3 8.3c-1.2 0-2.3-.2-3.3-.7L4.2 20.6l1.6-4A8.3 8.3 0 1121 11.3z" />
+        <path d="M12.4 14.6l-2.7-2.6c-2.5-2.4 1.1-5.2 2.7-3 1.6-2.2 5.2.6 2.7 3z" fill="currentColor" stroke="none" style={{ color: C.terra }} />
+      </svg>
     </span>
   );
 }
@@ -1266,7 +1288,8 @@ function CalendarView({ state, me, other, nav, goTab, tab }) {
   const caches = state.outlookCache || {};
   const eventsOn = (ds) => state.household.members.flatMap((m) => {
     const c = caches[m.id];
-    if (!c || (m.outlook?.access || "write") !== "readwrite" || !m.outlook?.connected) return [];
+    const acc = m.outlook?.access || "write";
+    if (!c || acc === "write" || !m.outlook?.connected) return [];
     return (c.events || []).filter((e) => e.start.slice(0, 10) === ds).map((e) => ({ ...e, member: m }));
   });
   const connected = state.household.members.filter((m) => m.outlook?.connected);
@@ -1368,7 +1391,7 @@ function CalendarView({ state, me, other, nav, goTab, tab }) {
 }
 
 /* ---------- 8i Sharing & access ---------- */
-function Sharing({ state, me, nav, saveHousehold }) {
+function Sharing({ state, me, nav, goBack, saveHousehold }) {
   const h = state.household;
   const setMember = (id, patch) => saveHousehold({ ...h, members: h.members.map((m) => (m.id === id ? { ...m, ...patch } : m)) });
   const setSetting = (k, v) => saveHousehold({ ...h, settings: { ...h.settings, [k]: v } });
@@ -1381,7 +1404,7 @@ function Sharing({ state, me, nav, saveHousehold }) {
     catch (e) { setMsMsg("Sign-in didn't start — worth re-checking the client ID."); }
   };
   return (<>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={() => nav("settings")} /><H1 small>Sharing & access</H1></div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>Sharing & access</H1></div>
     <div style={{ padding: "0 20px 18px" }}>
       <Kicker>Outlook</Kicker>
       <div style={{ ...card(22), padding: "16px 17px", marginBottom: 16 }}>
@@ -1417,11 +1440,13 @@ function Sharing({ state, me, nav, saveHousehold }) {
             )}
           </div>
           <SegPill style={{ marginTop: 13 }} value={m.outlook?.access || "write"} onChange={(v) => setMember(m.id, { outlook: { ...m.outlook, access: v } })}
-            options={[{ value: "write", label: "Write only" }, { value: "readwrite", label: "Read & write" }]} />
+            options={[{ value: "read", label: "Read" }, { value: "write", label: "Write" }, { value: "readwrite", label: "Read & write" }]} />
           <div style={{ fontSize: 11.5, fontWeight: 600, color: C.mut, lineHeight: 1.5, marginTop: 10 }}>
             {(m.outlook?.access || "write") === "readwrite"
-              ? <>Tasks go into {m.id === me.id ? "your" : m.name + "'s"} Outlook <b style={{ color: C.ink2 }}>and</b> {m.id === me.id ? "your" : "their"} events show in the shared calendar.</>
-              : <>{m.id === me.id ? "Your" : m.name + "'s"} tasks land in {m.id === me.id ? "your" : "their"} Outlook, but other events stay private — only free/busy is used for suggestions.</>}
+              ? <>Klaus writes tasks into {m.id === me.id ? "your" : m.name + "'s"} Outlook <b style={{ color: C.ink2 }}>and</b> {m.id === me.id ? "your" : "their"} events show in the shared calendar.</>
+              : (m.outlook?.access || "write") === "read"
+              ? <>{m.id === me.id ? "Your" : m.name + "'s"} Outlook events show in the shared calendar, but Klaus writes nothing into {m.id === me.id ? "your" : "their"} calendar.</>
+              : <>{m.id === me.id ? "Your" : m.name + "'s"} tasks land in {m.id === me.id ? "your" : "their"} Outlook, but other events stay private — only free/busy is shared.</>}
           </div>
         </div>
       ))}
@@ -1463,7 +1488,7 @@ function InviteCard() {
 }
 
 /* ---------- Settings (gear) ---------- */
-function Settings({ state, me, nav, syncStatus, setSyncStatus }) {
+function Settings({ state, me, nav, goBack, syncStatus, setSyncStatus }) {
   const keys = loadKeys();
   const [anth, setAnth] = useState(keys.anthropic || "");
   const [su, setSu] = useState(keys.supabaseUrl || "");
@@ -1499,7 +1524,7 @@ function Settings({ state, me, nav, syncStatus, setSyncStatus }) {
       style={{ width: "100%", boxSizing: "border-box", background: C.bg, border: "none", outline: "none", borderRadius: 14, padding: "12px 14px", fontSize: 12.5, fontWeight: 600, color: C.ink, fontFamily: mono ? "'JetBrains Mono',monospace" : FONT, marginTop: 8 }} />
   );
   return (<>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={() => nav("home")} /><H1 small>Settings</H1></div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 20px 10px" }}><Back onClick={goBack} /><H1 small>Settings</H1></div>
     <div style={{ padding: "0 20px 24px" }}>
       <Kicker>This phone</Kicker>
       <div style={{ ...card(22), padding: "16px 17px", marginBottom: 11, display: "flex", alignItems: "center", gap: 11 }}>
