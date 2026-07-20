@@ -144,7 +144,9 @@ async function sbUploadPhoto(dataUrl, name) {
     const path = name + ".jpg";
     const { error } = await s.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", upsert: true });
     if (error) return dataUrl;
-    return s.storage.from("photos").getPublicUrl(path).data.publicUrl;
+    const pub = s.storage.from("photos").getPublicUrl(path).data.publicUrl;
+    try { const r = await fetch(pub, { method: "HEAD" }); if (!r.ok) return dataUrl; } catch (e) { return dataUrl; }
+    return pub;
   } catch (e) { return dataUrl; }
 }
 
@@ -393,9 +395,9 @@ const PrimaryBtn = ({ children, onClick, style }) => (
   <div onClick={onClick} style={{ background: C.olive, color: "#fff", borderRadius: 999, padding: 15, fontSize: 15, fontWeight: 800, textAlign: "center", boxShadow: shadowBtn, cursor: "pointer", ...style }}>{children}</div>
 );
 const Photo = ({ src, h, r = 24, label, border, style }) => (
-  <div style={{ height: h, borderRadius: r, background: src ? "none" : "linear-gradient(135deg,#7b7469,#3f3a33)", position: "relative", overflow: "hidden", boxShadow: shadowHero, border: border ? "2.5px solid " + C.olive : "none", boxSizing: "border-box", ...style }}>
-    {src ? <img src={src} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-      : <span style={{ position: "absolute", inset: 0, background: "radial-gradient(circle at 32% 26%,rgba(255,255,255,.3),transparent 62%)" }} />}
+  <div style={{ height: h, borderRadius: r, background: "linear-gradient(135deg,#7b7469,#3f3a33)", position: "relative", overflow: "hidden", boxShadow: shadowHero, border: border ? "2.5px solid " + C.olive : "none", boxSizing: "border-box", ...style }}>
+    <span style={{ position: "absolute", inset: 0, background: "radial-gradient(circle at 32% 26%,rgba(255,255,255,.3),transparent 62%)" }} />
+    {src && <img src={src} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />}
     {label && <span style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "#fff", background: "rgba(61,59,46,.55)", borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap" }}>{label}</span>}
   </div>
 );
@@ -767,7 +769,7 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
           <CheckCircle state={t.status === "active" ? "active" : "todo"} onClick={(e) => { e.stopPropagation(); t.photoProof ? nav("task", { id: t.id }) : completeTask(t); }} />
           <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.mut, marginTop: 1 }}>{label(t)}</div></div>
           {t.daily && (t.streak || 0) > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: C.olive, background: C.oliveSoft, borderRadius: 999, padding: "4px 10px", whiteSpace: "nowrap" }}>{t.streak} days</span>}
-          {t.photoBefore && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
+          {t.photoBefore && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
         </div>
       ))}
       {doneList.length > 0 && (
@@ -780,7 +782,7 @@ function Home({ state, me, other, nav, goTab, tab, addTyped, completeTask, uncom
         <div key={t.id} onClick={() => nav("task", { id: t.id })} style={{ ...card(20), padding: "15px 16px", display: "flex", alignItems: "center", gap: 13, marginBottom: 9, opacity: 0.65, cursor: "pointer" }}>
           <CheckCircle state="done" onClick={(e) => { e.stopPropagation(); uncompleteTask(t); }} />
           <div style={{ flex: 1 }}><div style={{ fontSize: 15, fontWeight: 700, color: C.strike, textDecoration: "line-through" }}>{t.title}</div><div style={{ fontSize: 11.5, color: C.faint, marginTop: 1 }}>{label(t)}</div></div>
-          {(t.photoAfter || t.photoBefore) && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoAfter || t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
+          {(t.photoAfter || t.photoBefore) && <span style={{ width: 36, height: 36, borderRadius: 11, flex: "none", overflow: "hidden" }}><img src={t.photoAfter || t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></span>}
         </div>
       ))}
       {total === 0 && <div style={{ fontSize: 13, color: C.mut, fontWeight: 600, textAlign: "center", padding: "18px 0" }}>Type below, or snap a photo of the job.</div>}
@@ -802,7 +804,7 @@ function Tasks({ state, me, other, nav, goTab, tab, addTyped }) {
     const doneT = t.status === "done"; const pill = !doneT && relDuePill(t);
     return (
       <div onClick={() => nav("task", { id: t.id })} style={{ ...card(18), marginBottom: 9, overflow: "hidden", opacity: doneT ? (t.doneWithPhoto ? 0.75 : 0.6) : 1, cursor: "pointer" }}>
-        {t.photoBefore && <div style={{ height: 52, position: "relative" }}><img src={t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>}
+        {t.photoBefore && <div style={{ height: 52, position: "relative" }}><img src={t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>}
         <div style={{ padding: t.photoBefore ? "10px 13px" : "12px 13px" }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25, color: doneT ? C.strike : C.ink, textDecoration: doneT ? "line-through" : "none" }}>{t.title}</div>
           <div style={{ fontSize: 11, fontWeight: 600, color: doneT ? C.olive : C.mut, marginTop: 3 }}>
@@ -1069,6 +1071,7 @@ function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask, patchTas
   const kind = draft?.kind || "job";
   const hasItems = (draft?.items?.length || 0) > 0;
   const [saveMode, setSaveMode] = useState(null);
+  const [infoMine, setInfoMine] = useState(false);
   const effSave = saveMode ?? (kind === "info" ? "info" : "task");
   const wantTask = effSave === "task" || effSave === "both";
   const wantInfo = effSave === "info" || effSave === "both";
@@ -1111,7 +1114,7 @@ function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask, patchTas
       }
     }
     if (wantInfo) {
-      const inf = { id: uid(), kind: "info", title: title || "Worth keeping", listItems: (draft?.items || []).map((x) => ({ text: x, done: false })), photoBefore: photo, status: "todo", assignees: [], createdAt: todayStr(), comments: [] };
+      const inf = { id: uid(), kind: "info", title: title || "Worth keeping", listItems: (draft?.items || []).map((x) => ({ text: x, done: false })), photoBefore: photo, status: "todo", assignees: infoMine ? [me.id] : [], createdAt: todayStr(), comments: [] };
       saveTask(inf); uploads.push(inf.id); infoId = inf.id;
     }
     uploads.forEach((id) => sbUploadPhoto(photo, "cap-" + id).then((u) => { if (u !== photo) patchTask(id, { photoBefore: u }); }));
@@ -1158,6 +1161,7 @@ function AddFromPhoto({ state, me, other, nav, goBack, photo, saveTask, patchTas
             {chip("Make it a task", effSave === "task", () => setSaveMode("task"))}
             {chip("Keep as info", effSave === "info", () => setSaveMode("info"))}
             {chip("Both", effSave === "both", () => setSaveMode("both"))}
+            {wantInfo && chip("Info just for me", infoMine, () => setInfoMine(!infoMine))}
           </div>
         )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: kind !== "job" ? 8 : 13 }}>
@@ -1236,19 +1240,19 @@ function FinishPhoto({ state, me, other, nav, taskId, photo, saveTask, completeT
 }
 
 /* ---------- 8g Reminders & nudges ---------- */
-function InfoList({ state, nav, goTab, tab, addTyped }) {
+function InfoList({ state, me, nav, goTab, tab, addTyped }) {
   const [showArch, setShowArch] = useState(false);
-  const infos = state.tasks.filter((t) => t.kind === "info");
+  const infos = state.tasks.filter((t) => t.kind === "info" && (!(t.assignees || []).length || t.assignees.includes(me.id)));
   const bySort = (arr) => [...arr].sort((x, y) => (y.createdAt || "").localeCompare(x.createdAt || ""));
   const active = bySort(infos.filter((i) => !i.archivedAt));
   const archived = bySort(infos.filter((i) => i.archivedAt));
   const Card = ({ t }) => (
     <div onClick={() => nav("infoItem", { id: t.id })} style={{ ...card(18), marginBottom: 10, overflow: "hidden", cursor: "pointer", opacity: t.archivedAt ? 0.6 : 1 }}>
-      {t.photoBefore && <div style={{ height: 88, position: "relative" }}><img src={t.photoBefore} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>}
+      {t.photoBefore && <div style={{ height: 88, position: "relative" }}><img src={t.photoBefore} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>}
       <div style={{ padding: "12px 14px" }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{t.title}</div>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.mut, marginTop: 3 }}>
-          {(t.listItems?.length ? t.listItems.length + " line" + (t.listItems.length > 1 ? "s" : "") + " · " : "")}kept {shortDay(t.createdAt || todayStr())}
+          {(t.listItems?.length ? t.listItems.length + " line" + (t.listItems.length > 1 ? "s" : "") + " · " : "")}kept {shortDay(t.createdAt || todayStr())}{(t.assignees || []).includes(me.id) && t.assignees.length === 1 ? " · just you" : ""}
         </div>
       </div>
     </div>
@@ -1294,7 +1298,16 @@ function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTas
     </div>
     <div style={{ padding: "0 20px 18px" }}>
       {t.photoBefore && <Photo src={t.photoBefore} h={200} label={"kept · " + shortDay(t.createdAt || todayStr())} style={{ marginBottom: 13 }} />}
-      {t.archivedAt && <div style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.track, borderRadius: 999, padding: "6px 12px", display: "inline-block", marginBottom: 11 }}>archived</div>}
+      <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 11 }}>
+        {[{ v: "both", label: "Both of you" }, { v: "me", label: "Just me" }].map((o) => {
+          const isMine = (t.assignees || []).length === 1 && t.assignees.includes(me.id);
+          const on = o.v === "me" ? isMine : !isMine;
+          return <span key={o.v} onClick={() => saveTask({ ...t, assignees: o.v === "me" ? [me.id] : [] })}
+            style={{ fontSize: 11.5, fontWeight: 700, color: on ? "#fff" : C.ink2, background: on ? C.ink : "#fff", borderRadius: 999, padding: "6px 13px", boxShadow: on ? "none" : "0 1px 4px rgba(63,56,42,.07)", cursor: "pointer" }}>{o.label}</span>;
+        })}
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.mut }}>{(t.assignees || []).length === 1 ? "only you can see this — switch to reveal it" : "visible to you both"}</span>
+        {t.archivedAt && <span style={{ fontSize: 11.5, fontWeight: 700, color: C.mut, background: C.track, borderRadius: 999, padding: "6px 12px" }}>archived</span>}
+      </div>
       <div style={{ ...card(22), padding: "8px 18px" }}>
         {(t.listItems || []).map((it, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? "1px solid " + C.divider : "none" }}>
@@ -1334,7 +1347,7 @@ function InfoDetail({ state, me, other, nav, goBack, infoId, saveTask, removeTas
 }
 
 /* ---------- 8h Calendar ---------- */
-function CalendarView({ state, me, other, nav, goTab, tab }) {
+function CalendarView({ state, me, other, nav, goTab, tab, addTyped }) {
   const [sel, setSel] = useState(todayStr());
   const [anchor, setAnchor] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
   const first = new Date(anchor.y, anchor.m, 1);
@@ -1454,6 +1467,7 @@ function CalendarView({ state, me, other, nav, goTab, tab }) {
         </div>
       )}
     </div>
+    <BottomBar onText={addTyped} onPhoto={(p) => nav("addPhoto", { photo: p })} />
   </>);
 }
 
